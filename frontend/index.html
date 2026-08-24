@@ -179,10 +179,9 @@
       <thead>
         <tr>
           <th>Player ID</th>
-          <th>Effort Score</th>
-          <th>Grade</th>
-          <th>Avg Speed (px/f)</th>
-          <th>Ball Alignment</th>
+          <th>Effort</th>
+          <th>Dist. Start (px)</th>
+          <th>Dist. End (px)</th>
         </tr>
       </thead>
       <tbody id="results-body"></tbody>
@@ -283,27 +282,20 @@
 
       const players = data.player_reports || [];
       if (players.length === 0) {
-        resultsBody.innerHTML = '<tr><td colspan="5" style="color:#8b949e;text-align:center;">No defensive players detected.</td></tr>';
+        resultsBody.innerHTML = '<tr><td colspan="4" style="color:#8b949e;text-align:center;">No defensive players detected.</td></tr>';
         return;
       }
 
       for (const p of players) {
-        const gradeClass = p.grade === 'High' ? 'grade-high'
-                         : p.grade === 'Moderate' ? 'grade-moderate' : 'grade-low';
-        const barColor = p.grade === 'High' ? '#3fb950'
-                       : p.grade === 'Moderate' ? '#d29922' : '#f85149';
-        const filled = Math.round(p.effort_score * 1.2); // max bar ~120px
+        const effortColor  = p.effort ? '#3fb950' : '#f85149';
+        const effortText   = p.effort ? '✓  YES' : '✗  NO';
 
         resultsBody.insertAdjacentHTML('beforeend', `
           <tr>
             <td>#${p.track_id}</td>
-            <td>
-              <span class="bar-bg"><span class="bar-fill" style="width:${filled}px;background:${barColor}"></span></span>
-              &nbsp;${p.effort_score.toFixed(0)}
-            </td>
-            <td class="${gradeClass}">${p.grade}</td>
-            <td>${p.avg_speed_px_per_frame.toFixed(1)}</td>
-            <td>${(p.avg_alignment * 100).toFixed(0)}%</td>
+            <td style="font-weight:700;color:${effortColor};font-size:1rem;">${effortText}</td>
+            <td>${p.dist_start.toFixed(0)} px</td>
+            <td>${p.dist_end.toFixed(0)} px</td>
           </tr>
         `);
       }

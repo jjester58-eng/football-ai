@@ -1,92 +1,73 @@
 """
 effort_scorer.py
 ----------------
-Computes a per-player "effort score" for defensive players by measuring:
+Determines whether each blue defensive player made an EFFORT to close
+distance to the ball.
 
-  1. Speed       — pixel displacement per frame (smoothed)
-  2. Alignment   — cosine similarity between the player's velocity vector
-                   and the vector pointing toward the ball
+Definition of effort (Yes / No):
+  - Track the ball position across the play.
+  - Track each defender's distance to the ball per frame.
+  - Compare average distance in the FIRST third of frames vs the LAST third.
+  - If distance decreased → YES (made effort).
+  - If distance stayed the same or increased → NO.
 
-Effort Score (0-100) = 0.5 × speed_score + 0.5 × alignment_score
-
-Grades:
-  ● 80-100  High Effort   🟢
-  ● 50-79   Moderate      🟡
-  ● 0-49    Low Effort    🔴
+Ball movement is NOT required — effort is judged regardless of whether
+the ball moved forward.
 """
 
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
-from scipy.ndimage import uniform_filter1d
 
 logger = logging.getLogger(__name__)
 
-# Maximum expected player speed in pixels/frame (calibration constant).
-# Tune per camera / resolution; used to normalise raw speed to [0, 1].
-_MAX_SPEED_PX_PER_FRAME = 25.0
+# Minimum number of frames a player must appear in to be scored
+_MIN_FRAMES = 6
 
-# Smoothing window (frames) for velocity estimation
-_SMOOTH_WINDOW = 5
+# How much distance must decrease to count as "closed" (pixels)
+# Avoids penalising tiny noise as "no effort"
+_CLOSE_THRESHOLD_PX = 5.0
 
 
 @dataclass
 class PlayerTrack:
-    """Accumulates frame-by-frame state for a single tracked player."""
     track_id: int
-    team: str
-    frame_centers: list[tuple[float, float]] = field(default_factory=list)
     frame_indices: list[int] = field(default_factory=list)
-    ball_centers: list[Optional[tuple[float, float]]] = field(default_factory=list)
-
-    def add_frame(
-        self,
-        frame_idx: int,
-        center: tuple[float, float],
-        ball_center: Optional[tuple[float, float]],
-    ) -> None:
-        self.frame_centers.append(center)
-        self.frame_indices.append(frame_idx)
-        self.ball_centers.append(ball_center)
+    # Distance from player foot to ball center each frame (pixels)
+    distances_to_ball: list[float] = field(default_factory=list)
 
 
 @dataclass
 class PlayerEffortReport:
     track_id: int
-    team: str
-    effort_score: float          # 0-100
-    grade: str                   # "High" | "Moderate" | "Low"
-    avg_speed_px_per_frame: float
-    avg_alignment: float         # -1 to 1 (1 = perfectly toward ball)
+    effort: bool          # True = Yes, False = No
+    label: str            # "EFFORT ✓" | "NO EFFORT ✗"
+    dist_start: float     # average distance in first third (px)
+    dist_end: float       # average distance in last third (px)
     frame_count: int
 
 
-def _center(bbox: tuple[int, int, int, int]) -> tuple[float, float]:
+def _foot_center(bbox: tuple[int, int, int, int]) -> tuple[float, float]:
+    """Bottom-center of bounding box — where the player's feet are."""
     x1, y1, x2, y2 = bbox
-    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+    return ((x1 + x2) / 2.0, float(y2))
 
 
-def _grade(score: float) -> str:
-    if score >= 80:
-        return "High"
-    if score >= 50:
-        return "Moderate"
-    return "Low"
+def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return float(np.hypot(a[0] - b[0], a[1] - b[1]))
 
 
 class EffortScorer:
     """
-    Aggregates per-frame observations and produces effort reports.
+    Accumulates per-frame observations then computes Yes/No effort reports.
 
     Usage::
-
         scorer = EffortScorer()
-        for frame_result, classified_players in zip(frame_results, players):
+        for frame_result, classified_players in ...:
             ball_center = frame_result.ball_center()
             for cp in classified_players:
                 if cp.team == "defense":
@@ -94,131 +75,69 @@ class EffortScorer:
         reports = scorer.compute_reports()
     """
 
-    def __init__(self, max_speed: float = _MAX_SPEED_PX_PER_FRAME) -> None:
-        self.max_speed = max_speed
+    def __init__(self) -> None:
         self._tracks: dict[int, PlayerTrack] = {}
 
     def update(
         self,
         frame_idx: int,
-        classified_player,
+        classified_player,          # ClassifiedPlayer
         ball_center: Optional[tuple[float, float]],
     ) -> None:
-        """Record one frame of observation for a player."""
         tid = classified_player.detection.track_id
         if tid not in self._tracks:
-            self._tracks[tid] = PlayerTrack(
-                track_id=tid,
-                team=classified_player.team,
-            )
-        c = _center(classified_player.detection.bbox)
-        self._tracks[tid].add_frame(frame_idx, c, ball_center)
+            self._tracks[tid] = PlayerTrack(track_id=tid)
+
+        foot = _foot_center(classified_player.detection.bbox)
+
+        if ball_center is not None:
+            d = _dist(foot, ball_center)
+        else:
+            d = float("nan")
+
+        self._tracks[tid].frame_indices.append(frame_idx)
+        self._tracks[tid].distances_to_ball.append(d)
 
     def compute_reports(self) -> list[PlayerEffortReport]:
-        """Return one PlayerEffortReport per tracked defensive player."""
         reports: list[PlayerEffortReport] = []
         for tid, track in self._tracks.items():
-            if track.team != "defense":
-                continue
-            report = self._score_track(track)
-            if report:
-                reports.append(report)
-        return sorted(reports, key=lambda r: r.effort_score, reverse=True)
+            r = self._score_track(track)
+            if r:
+                reports.append(r)
+        # Sort: effort first, then by how much distance they closed
+        return sorted(reports, key=lambda r: (not r.effort, r.dist_end - r.dist_start))
 
-    def per_frame_scores(self) -> dict[int, list[tuple[int, float]]]:
+    def per_frame_effort(self) -> dict[int, bool | None]:
         """
-        Returns {frame_idx: [(track_id, per_frame_effort_score), ...]}
-        for live annotation during video rendering.
+        Returns {track_id: effort_bool} after compute_reports() is called.
+        Used by the visualizer for per-frame annotation.
         """
-        result: dict[int, list[tuple[int, float]]] = {}
-        for tid, track in self._tracks.items():
-            if track.team != "defense":
-                continue
-            centers = np.array(track.frame_centers)
-            if len(centers) < 2:
-                continue
-            speeds = self._compute_speeds(centers)
-            alignments = self._compute_alignments(centers, track.ball_centers)
-            for i, (fi, speed, align) in enumerate(
-                zip(track.frame_indices, speeds, alignments)
-            ):
-                spd_norm = min(speed / self.max_speed, 1.0)
-                align_norm = (align + 1.0) / 2.0  # map [-1,1] → [0,1]
-                score = round((spd_norm * 0.5 + align_norm * 0.5) * 100, 1)
-                result.setdefault(fi, []).append((tid, score))
+        result: dict[int, bool | None] = {}
+        for r in self.compute_reports():
+            result[r.track_id] = r.effort
         return result
 
     # ------------------------------------------------------------------
-    # private helpers
-    # ------------------------------------------------------------------
 
     def _score_track(self, track: PlayerTrack) -> Optional[PlayerEffortReport]:
-        centers = np.array(track.frame_centers)
-        if len(centers) < 2:
+        dists = [d for d in track.distances_to_ball if not np.isnan(d)]
+        if len(dists) < _MIN_FRAMES:
             return None
 
-        speeds = self._compute_speeds(centers)
-        alignments = self._compute_alignments(centers, track.ball_centers)
+        n = len(dists)
+        third = max(1, n // 3)
 
-        avg_speed = float(np.mean(speeds))
-        avg_align = float(np.mean(alignments))
+        dist_start = float(np.mean(dists[:third]))
+        dist_end   = float(np.mean(dists[-third:]))
 
-        spd_norm = min(avg_speed / self.max_speed, 1.0)
-        align_norm = (avg_align + 1.0) / 2.0
-        score = round((spd_norm * 0.5 + align_norm * 0.5) * 100, 1)
+        # Closed distance by more than the noise threshold?
+        effort = (dist_start - dist_end) > _CLOSE_THRESHOLD_PX
 
         return PlayerEffortReport(
             track_id=track.track_id,
-            team=track.team,
-            effort_score=score,
-            grade=_grade(score),
-            avg_speed_px_per_frame=round(avg_speed, 2),
-            avg_alignment=round(avg_align, 3),
-            frame_count=len(centers),
+            effort=effort,
+            label="EFFORT ✓" if effort else "NO EFFORT ✗",
+            dist_start=round(dist_start, 1),
+            dist_end=round(dist_end, 1),
+            frame_count=len(track.frame_indices),
         )
-
-    @staticmethod
-    def _compute_speeds(centers: np.ndarray) -> np.ndarray:
-        """Smoothed pixel displacement per frame."""
-        deltas = np.linalg.norm(np.diff(centers, axis=0), axis=1)
-        # Pad to same length as centers
-        deltas = np.concatenate([[deltas[0]], deltas])
-        if len(deltas) >= _SMOOTH_WINDOW:
-            deltas = uniform_filter1d(deltas, size=_SMOOTH_WINDOW)
-        return deltas
-
-    @staticmethod
-    def _compute_alignments(
-        centers: np.ndarray,
-        ball_centers: list[Optional[tuple[float, float]]],
-    ) -> np.ndarray:
-        """
-        For each frame, compute cosine similarity between the player's
-        velocity vector and the vector pointing toward the ball.
-        Returns values in [-1, 1]; 1.0 = perfectly running at the ball.
-        """
-        alignments = []
-        velocity = np.zeros(2)
-
-        for i, (cx, cy) in enumerate(centers):
-            # Update velocity estimate
-            if i > 0:
-                velocity = centers[i] - centers[i - 1]
-
-            ball = ball_centers[i]
-            if ball is None or np.linalg.norm(velocity) < 1e-6:
-                alignments.append(0.0)
-                continue
-
-            to_ball = np.array(ball) - np.array([cx, cy])
-            to_ball_norm = np.linalg.norm(to_ball)
-            vel_norm = np.linalg.norm(velocity)
-
-            if to_ball_norm < 1e-6:
-                alignments.append(1.0)  # player is on the ball
-                continue
-
-            cos_sim = float(np.dot(velocity, to_ball) / (vel_norm * to_ball_norm))
-            alignments.append(max(-1.0, min(1.0, cos_sim)))
-
-        return np.array(alignments)

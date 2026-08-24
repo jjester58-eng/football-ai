@@ -1,8 +1,9 @@
 """
 visualizer.py
 -------------
-Draws annotated bounding boxes, team labels, and effort scores onto
-video frames. Produces the final annotated output video.
+Draws bounding boxes and Yes/No effort labels on video frames.
+
+Only blue defensive players (inside the field) are annotated.
 """
 
 from __future__ import annotations
@@ -16,44 +17,19 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Colors (BGR)
-_COLOR_DEFENSE = (220, 80, 20)    # blue-ish
-_COLOR_OFFENSE = (40, 180, 40)    # green
-_COLOR_BALL = (0, 215, 255)       # gold
-_COLOR_UNKNOWN = (180, 180, 180)  # grey
-_COLOR_HIGH = (0, 200, 0)
-_COLOR_MODERATE = (0, 200, 255)
-_COLOR_LOW = (0, 0, 220)
+_COLOR_EFFORT     = (50, 220, 50)    # green  — made effort
+_COLOR_NO_EFFORT  = (50, 50, 220)    # red    — no effort
+_COLOR_BALL       = (0, 215, 255)    # gold
+_COLOR_FIELD_EDGE = (255, 255, 255)  # white (optional field outline)
 
-_FONT = cv2.FONT_HERSHEY_SIMPLEX
-_FONT_SCALE = 0.55
-_THICKNESS = 2
-
-
-def _grade_color(score: float) -> tuple[int, int, int]:
-    if score >= 80:
-        return _COLOR_HIGH
-    if score >= 50:
-        return _COLOR_MODERATE
-    return _COLOR_LOW
-
-
-def _team_color(team: str) -> tuple[int, int, int]:
-    if team == "defense":
-        return _COLOR_DEFENSE
-    if team == "offense":
-        return _COLOR_OFFENSE
-    return _COLOR_UNKNOWN
+_FONT       = cv2.FONT_HERSHEY_SIMPLEX
+_FONT_SCALE = 0.6
+_THICKNESS  = 2
 
 
 class Visualizer:
     """
-    Annotates frames and writes them to an output video file.
-
-    Parameters
-    ----------
-    output_path : destination .mp4 file path
-    fps : frames per second of the output video
-    width, height : frame dimensions
+    Annotates frames and writes them to an output .mp4 file.
     """
 
     def __init__(
@@ -75,57 +51,61 @@ class Visualizer:
     def annotate_and_write(
         self,
         frame: np.ndarray,
-        classified_players: list,      # list[ClassifiedPlayer]
-        balls: list,                   # list[Detection]
-        frame_scores: dict[int, float], # {track_id: effort_score}
+        classified_players: list,       # list[ClassifiedPlayer]
+        balls: list,                    # list[Detection]
+        effort_map: dict[int, bool | None],  # {track_id: effort_bool}
+        field_mask: np.ndarray | None = None,
     ) -> None:
-        """Draw all annotations and write the frame to the output file."""
         annotated = frame.copy()
+
+        # Optional: faint field overlay
+        if field_mask is not None:
+            tint = annotated.copy()
+            tint[field_mask == 0] = (tint[field_mask == 0] * 0.5).astype(np.uint8)
+            cv2.addWeighted(tint, 0.25, annotated, 0.75, 0, annotated)
 
         # Draw ball
         for ball in balls:
             x1, y1, x2, y2 = ball.bbox
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), _COLOR_BALL, _THICKNESS)
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            cv2.circle(annotated, (cx, cy), 10, _COLOR_BALL, _THICKNESS)
             cv2.putText(
                 annotated, "ball",
-                (x1, y1 - 6), _FONT, _FONT_SCALE - 0.1, _COLOR_BALL, 1
+                (x1, y1 - 6), _FONT, 0.45, _COLOR_BALL, 1
             )
 
-        # Draw players
+        # Draw blue defensive players only
         for cp in classified_players:
+            if cp.team != "defense":
+                continue
+
             x1, y1, x2, y2 = cp.detection.bbox
-            color = _team_color(cp.team)
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, _THICKNESS)
-
             tid = cp.detection.track_id
-            score = frame_scores.get(tid)
+            effort = effort_map.get(tid)
 
-            if cp.team == "defense" and score is not None:
-                grade_color = _grade_color(score)
-                label = f"DEF #{tid} | {score:.0f}"
-                cv2.putText(
-                    annotated, label,
-                    (x1, y1 - 8), _FONT, _FONT_SCALE, grade_color, _THICKNESS
-                )
-                # Effort bar below the box
-                bar_w = x2 - x1
-                filled = int(bar_w * score / 100)
-                cv2.rectangle(
-                    annotated,
-                    (x1, y2 + 2), (x2, y2 + 8),
-                    (60, 60, 60), -1
-                )
-                cv2.rectangle(
-                    annotated,
-                    (x1, y2 + 2), (x1 + filled, y2 + 8),
-                    grade_color, -1
-                )
+            # Choose color and label based on effort (None = still computing)
+            if effort is True:
+                color = _COLOR_EFFORT
+                label = f"#{tid} EFFORT ✓"
+            elif effort is False:
+                color = _COLOR_NO_EFFORT
+                label = f"#{tid} NO EFFORT ✗"
             else:
-                label = f"OFF #{tid}" if cp.team == "offense" else f"#{tid}"
-                cv2.putText(
-                    annotated, label,
-                    (x1, y1 - 8), _FONT, _FONT_SCALE, color, 1
-                )
+                color = (180, 180, 180)
+                label = f"#{tid}"
+
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, _THICKNESS)
+            # Label background for readability
+            (tw, th), _ = cv2.getTextSize(label, _FONT, _FONT_SCALE, _THICKNESS)
+            cv2.rectangle(
+                annotated,
+                (x1, y1 - th - 8), (x1 + tw + 4, y1),
+                color, -1
+            )
+            cv2.putText(
+                annotated, label,
+                (x1 + 2, y1 - 5), _FONT, _FONT_SCALE, (0, 0, 0), _THICKNESS - 1
+            )
 
         self._writer.write(annotated)
 
@@ -145,33 +125,33 @@ def draw_summary_overlay(
     reports: list,  # list[PlayerEffortReport]
 ) -> np.ndarray:
     """
-    Draw a compact leaderboard of effort scores in the top-right corner.
-    Returns a copy of the frame with the overlay applied.
+    Leaderboard panel in the top-right corner showing
+    player ID and Yes/No effort result.
     """
     overlay = frame.copy()
-    x_start = frame.shape[1] - 230
-    y_start = 15
-    line_h = 22
+    x_start = frame.shape[1] - 210
+    y_start = 18
+    line_h  = 24
 
-    # Background panel
-    panel_h = len(reports) * line_h + 30
+    panel_h = len(reports) * line_h + 35
     cv2.rectangle(
         overlay,
-        (x_start - 8, y_start - 15),
+        (x_start - 8, y_start - 18),
         (frame.shape[1] - 5, y_start + panel_h),
-        (30, 30, 30),
-        -1,
+        (20, 20, 20), -1,
     )
-    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, overlay)
+    cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, overlay)
 
     cv2.putText(
         overlay, "DEF EFFORT",
-        (x_start, y_start), _FONT, 0.55, (255, 255, 255), 1
+        (x_start, y_start), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1
     )
+
     for i, r in enumerate(reports):
         y = y_start + (i + 1) * line_h
-        color = _grade_color(r.effort_score)
-        text = f"#{r.track_id}: {r.effort_score:.0f}  [{r.grade}]"
-        cv2.putText(overlay, text, (x_start, y), _FONT, 0.48, color, 1)
+        color = _COLOR_EFFORT if r.effort else _COLOR_NO_EFFORT
+        text  = f"#{r.track_id}: {r.label}"
+        cv2.putText(overlay, text, (x_start, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
     return overlay
