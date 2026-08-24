@@ -1,0 +1,10 @@
+# Custom ByteTrack config for football analysis.
+# Longer track_buffer keeps IDs alive through brief occlusions / low-confidence frames,
+# which is critical when players bunch up at the line of scrimmage.
+
+tracker_type: bytetrack
+track_high_thresh: 0.45    # min confidence for a new high-quality track
+track_low_thresh: 0.10     # min confidence to keep a weak detection in a track
+new_track_thresh: 0.50     # min confidence to START a brand-new track
+track_buffer: 60           # frames to keep a track alive without any detection
+match_thresh: 0.85         # IOU threshold for matching — higher = stricter, fewer ID switches

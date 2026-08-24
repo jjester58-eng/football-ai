@@ -26,11 +26,15 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Minimum number of frames a player must appear in to be scored
-_MIN_FRAMES = 6
+_MIN_FRAMES = 15
 
 # How much distance must decrease to count as "closed" (pixels)
-# Avoids penalising tiny noise as "no effort"
 _CLOSE_THRESHOLD_PX = 5.0
+
+# A real defensive unit has exactly 11 players.
+# After all tracking is done, keep only the top N track IDs by frame count.
+# This automatically discards short-lived ghost tracks caused by ID switches.
+_MAX_DEFENSIVE_PLAYERS = 11
 
 
 @dataclass
@@ -99,12 +103,29 @@ class EffortScorer:
         self._tracks[tid].distances_to_ball.append(d)
 
     def compute_reports(self) -> list[PlayerEffortReport]:
+        """Return one PlayerEffortReport per tracked defensive player.
+
+        Only the top _MAX_DEFENSIVE_PLAYERS track IDs (by frame count) are
+        kept. Short-lived ghost tracks caused by ByteTrack ID switches are
+        automatically discarded.
+        """
+        # Sort all tracks by how many frames they appear in (most = real player)
+        sorted_tracks = sorted(
+            self._tracks.values(),
+            key=lambda t: len(t.frame_indices),
+            reverse=True,
+        )
+
+        # Keep only the top 11
+        top_tracks = sorted_tracks[:_MAX_DEFENSIVE_PLAYERS]
+
         reports: list[PlayerEffortReport] = []
-        for tid, track in self._tracks.items():
+        for track in top_tracks:
             r = self._score_track(track)
             if r:
                 reports.append(r)
-        # Sort: effort first, then by how much distance they closed
+
+        # Sort final list: effort first, then by most distance closed
         return sorted(reports, key=lambda r: (not r.effort, r.dist_end - r.dist_start))
 
     def per_frame_effort(self) -> dict[int, bool | None]:

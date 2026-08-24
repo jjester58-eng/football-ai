@@ -100,9 +100,13 @@ class PlayerDetector:
             raise FileNotFoundError(video_path)
 
         logger.info("Tracking video: %s", video_path)
+        # Use football-tuned ByteTrack config (longer buffer, stricter matching)
+        tracker_cfg = Path(__file__).parent.parent / "bytetrack_football.yaml"
+        tracker_cfg = str(tracker_cfg) if tracker_cfg.exists() else "bytetrack.yaml"
+
         results = self.model.track(
             source=str(video_path),
-            tracker="bytetrack.yaml",
+            tracker=tracker_cfg,
             conf=self.conf,
             classes=[_CLASS_PERSON, _CLASS_SPORTS_BALL],
             device=self.device,
