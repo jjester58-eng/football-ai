@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Football AI — Defensive Effort Analyzer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+    header h1 { font-size: 2rem; color: #58a6ff; }
+    header p  { color: #8b949e; margin-top: .4rem; }
+
+    /* ── Drop Zone ── */
+    #drop-zone {
+      width: 100%;
+      max-width: 640px;
+      border: 2px dashed #30363d;
+      border-radius: 12px;
+      padding: 3rem 2rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+    }
+    #drop-zone.drag-over {
+      border-color: #58a6ff;
+      background: #161b22;
+    }
+    #drop-zone svg { width: 48px; opacity: .5; margin-bottom: 1rem; }
+    #drop-zone p   { color: #8b949e; font-size: .95rem; }
+    #drop-zone span { color: #58a6ff; font-weight: 600; cursor: pointer; }
+    #file-input { display: none; }
+
+    /* ── Button ── */
+    #upload-btn {
+      display: none;
+      margin-top: 1.5rem;
+      padding: .7rem 2.2rem;
+      background: #238636;
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    #upload-btn:hover { background: #2ea043; }
+
+    /* ── Status ── */
+    #status-box {
+      display: none;
+      margin-top: 2rem;
+      max-width: 640px;
+      width: 100%;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+    }
+    #status-text { color: #8b949e; font-size: .9rem; }
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid #58a6ff;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Results ── */
+    #results {
+      display: none;
+      margin-top: 2rem;
+      max-width: 740px;
+      width: 100%;
+    }
+    #results h2 { color: #58a6ff; margin-bottom: 1rem; }
+
+    video {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid #30363d;
+      margin-bottom: 1.5rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .9rem;
+    }
+    thead th {
+      background: #161b22;
+      color: #8b949e;
+      padding: .6rem .9rem;
+      text-align: left;
+      border-bottom: 1px solid #30363d;
+    }
+    tbody tr:nth-child(even) { background: #161b22; }
+    tbody td {
+      padding: .55rem .9rem;
+      border-bottom: 1px solid #21262d;
+    }
+    .grade-high     { color: #3fb950; font-weight: 700; }
+    .grade-moderate { color: #d29922; font-weight: 700; }
+    .grade-low      { color: #f85149; font-weight: 700; }
+
+    /* Progress bar in table */
+    .bar-bg {
+      background: #21262d;
+      border-radius: 4px;
+      height: 8px;
+      width: 120px;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 4px;
+    }
+
+    #error-msg {
+      display: none;
+      color: #f85149;
+      margin-top: 1rem;
+      font-size: .9rem;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>🏈 Defensive Effort Analyzer</h1>
+    <p>Upload a football play clip — AI will score each blue defender's effort toward the ball.</p>
+  </header>
+
+  <!-- Drop Zone -->
+  <div id="drop-zone">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="1.5">
+      <path d="M12 16V4m0 0L8 8m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke-linecap="round"/>
+    </svg>
+    <p>Drag & drop a video here, or <span onclick="document.getElementById('file-input').click()">browse</span></p>
+    <p style="margin-top:.4rem;font-size:.8rem;">.mp4 · .mov · .avi · .mkv</p>
+    <input type="file" id="file-input" accept=".mp4,.mov,.avi,.mkv" />
+  </div>
+
+  <button id="upload-btn">Analyze Play ▶</button>
+  <p id="error-msg"></p>
+
+  <!-- Status / Progress -->
+  <div id="status-box">
+    <span class="spinner"></span>
+    <span id="status-text">Uploading…</span>
+  </div>
+
+  <!-- Results -->
+  <div id="results">
+    <h2>Analysis Results</h2>
+    <video id="result-video" controls></video>
+    <table>
+      <thead>
+        <tr>
+          <th>Player ID</th>
+          <th>Effort Score</th>
+          <th>Grade</th>
+          <th>Avg Speed (px/f)</th>
+          <th>Ball Alignment</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const API = '';   // same origin; change to http://localhost:8000 for dev
+
+    const dropZone   = document.getElementById('drop-zone');
+    const fileInput  = document.getElementById('file-input');
+    const uploadBtn  = document.getElementById('upload-btn');
+    const statusBox  = document.getElementById('status-box');
+    const statusText = document.getElementById('status-text');
+    const resultsDiv = document.getElementById('results');
+    const errorMsg   = document.getElementById('error-msg');
+    const resultVideo = document.getElementById('result-video');
+    const resultsBody = document.getElementById('results-body');
+
+    let selectedFile = null;
+    let pollInterval = null;
+
+    // ── drag & drop ──────────────────────────────────────────────────
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+
+    function handleFile(file) {
+      if (!file) return;
+      selectedFile = file;
+      dropZone.querySelector('p').textContent = `Selected: ${file.name}`;
+      uploadBtn.style.display = 'inline-block';
+      errorMsg.style.display = 'none';
+    }
+
+    // ── upload ───────────────────────────────────────────────────────
+    uploadBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+
+      uploadBtn.disabled = true;
+      statusBox.style.display = 'block';
+      statusText.textContent = 'Uploading…';
+      resultsDiv.style.display = 'none';
+      errorMsg.style.display = 'none';
+
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      try {
+        const resp = await fetch(`${API}/analyze`, { method: 'POST', body: formData });
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        const { job_id } = await resp.json();
+        statusText.textContent = 'Processing — detecting players and scoring effort…';
+        pollForResult(job_id);
+      } catch (err) {
+        showError(err.message);
+      }
+    });
+
+    // ── polling ──────────────────────────────────────────────────────
+    function pollForResult(jobId) {
+      pollInterval = setInterval(async () => {
+        try {
+          const resp = await fetch(`${API}/result/${jobId}`);
+          const data = await resp.json();
+
+          if (data.status === 'done') {
+            clearInterval(pollInterval);
+            showResults(jobId, data);
+          } else if (data.status === 'error') {
+            clearInterval(pollInterval);
+            showError('Analysis failed on the server. Check server logs.');
+          }
+          // queued / processing → keep polling
+        } catch (err) {
+          clearInterval(pollInterval);
+          showError(err.message);
+        }
+      }, 2500);
+    }
+
+    // ── render results ───────────────────────────────────────────────
+    function showResults(jobId, data) {
+      statusBox.style.display = 'none';
+      resultsDiv.style.display = 'block';
+      uploadBtn.disabled = false;
+
+      resultVideo.src = `${API}/video/${jobId}`;
+      resultsBody.innerHTML = '';
+
+      const players = data.player_reports || [];
+      if (players.length === 0) {
+        resultsBody.innerHTML = '<tr><td colspan="5" style="color:#8b949e;text-align:center;">No defensive players detected.</td></tr>';
+        return;
+      }
+
+      for (const p of players) {
+        const gradeClass = p.grade === 'High' ? 'grade-high'
+                         : p.grade === 'Moderate' ? 'grade-moderate' : 'grade-low';
+        const barColor = p.grade === 'High' ? '#3fb950'
+                       : p.grade === 'Moderate' ? '#d29922' : '#f85149';
+        const filled = Math.round(p.effort_score * 1.2); // max bar ~120px
+
+        resultsBody.insertAdjacentHTML('beforeend', `
+          <tr>
+            <td>#${p.track_id}</td>
+            <td>
+              <span class="bar-bg"><span class="bar-fill" style="width:${filled}px;background:${barColor}"></span></span>
+              &nbsp;${p.effort_score.toFixed(0)}
+            </td>
+            <td class="${gradeClass}">${p.grade}</td>
+            <td>${p.avg_speed_px_per_frame.toFixed(1)}</td>
+            <td>${(p.avg_alignment * 100).toFixed(0)}%</td>
+          </tr>
+        `);
+      }
+    }
+
+    function showError(msg) {
+      statusBox.style.display = 'none';
+      uploadBtn.disabled = false;
+      errorMsg.style.display = 'block';
+      errorMsg.textContent = `Error: ${msg}`;
+    }
+  </script>
+</body>
+</html>
