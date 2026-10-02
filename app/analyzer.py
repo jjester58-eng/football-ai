@@ -26,6 +26,16 @@ from app.field_detector import FieldDetector
 from app.team_classifier import TeamClassifier
 from app.visualizer import Visualizer, draw_summary_overlay
 
+
+def _foot_center(bbox: tuple[int, int, int, int]) -> tuple[float, float]:
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2.0, float(y2))
+
+
+def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return float(((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,6 +70,7 @@ def analyze_video(
     classifier = TeamClassifier()
     field_det  = FieldDetector()
     scorer     = EffortScorer()
+    target_track_id = None
 
     # ── video properties ───────────────────────────────────────────────
     cap    = cv2.VideoCapture(str(input_path))
@@ -96,6 +107,37 @@ def analyze_video(
         classified  = classifier.classify(frame, on_field_persons)
         ball_center = frame_result.ball_center()
 
+        # The football is the best target when visible. When it is not
+        # visible, keep following the non-defensive player last associated
+        # with the football. This makes a receiver/ball carrier the stable
+        # target after a catch instead of requiring continuous ball detection.
+        target_point = ball_center
+        if ball_center is not None:
+            candidates = [
+                cp for cp in classified
+                if cp.team != "defense"
+            ]
+            if candidates:
+                target = min(
+                    candidates,
+                    key=lambda cp: _distance(
+                        _foot_center(cp.detection.bbox), ball_center
+                    ),
+                )
+                target_track_id = target.detection.track_id
+                target_point = _foot_center(target.detection.bbox)
+        elif target_track_id is not None:
+            target = next(
+                (
+                    cp for cp in classified
+                    if cp.detection.track_id == target_track_id
+                    and cp.team != "defense"
+                ),
+                None,
+            )
+            if target is not None:
+                target_point = _foot_center(target.detection.bbox)
+
         total_person_detections += len(frame_result.persons)
         total_on_field_persons += len(on_field_persons)
         total_defense_classifications += sum(cp.team == "defense" for cp in classified)
@@ -104,7 +146,7 @@ def analyze_video(
 
         for cp in classified:
             if cp.team == "defense":
-                scorer.update(frame_result.frame_idx, cp, ball_center)
+                scorer.update(frame_result.frame_idx, cp, target_point)
 
         frame_store.append({
             "frame_idx":  frame_result.frame_idx,

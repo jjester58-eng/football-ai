@@ -2,7 +2,7 @@
 effort_scorer.py
 ----------------
 Determines whether each blue defensive player made an EFFORT to close
-distance to the ball.
+distance to the play target.
 
 Definition of effort (Yes / No):
   - Track the ball position across the play.
@@ -42,7 +42,7 @@ class PlayerTrack:
     track_id: int
     frame_indices: list[int] = field(default_factory=list)
     # Distance from player foot to ball center each frame (pixels)
-    distances_to_ball: list[float] = field(default_factory=list)
+    distances_to_target: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -86,7 +86,7 @@ class EffortScorer:
         self,
         frame_idx: int,
         classified_player,          # ClassifiedPlayer
-        ball_center: Optional[tuple[float, float]],
+        target_point: Optional[tuple[float, float]],
     ) -> None:
         tid = classified_player.detection.track_id
         if tid not in self._tracks:
@@ -100,7 +100,7 @@ class EffortScorer:
             d = float("nan")
 
         self._tracks[tid].frame_indices.append(frame_idx)
-        self._tracks[tid].distances_to_ball.append(d)
+        self._tracks[tid].distances_to_target.append(d)
 
     def compute_reports(self) -> list[PlayerEffortReport]:
         """Return one PlayerEffortReport per tracked defensive player.
