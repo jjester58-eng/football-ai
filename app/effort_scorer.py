@@ -116,6 +116,21 @@ class EffortScorer:
             reverse=True,
         )
 
+        # Diagnostic only: show whether defensive tracks have enough usable
+        # observations to reach the scoring stage. This does not change scoring.
+        logger.info(
+            "Scorer diagnostics | unique_defense_tracks=%d | top_tracks=%s",
+            len(sorted_tracks),
+            [
+                {
+                    "id": t.track_id,
+                    "frames": len(t.frame_indices),
+                    "ball_frames": sum(not np.isnan(d) for d in t.distances_to_ball),
+                }
+                for t in sorted_tracks[:15]
+            ],
+        )
+
         # Keep only the top 11
         top_tracks = sorted_tracks[:_MAX_DEFENSIVE_PLAYERS]
 
