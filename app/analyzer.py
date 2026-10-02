@@ -72,6 +72,14 @@ def analyze_video(
     frame_store: list[dict] = []
     field_mask = None   # computed once from first frame
 
+    # Diagnostic counters — these report what each pipeline stage sees
+    # without changing detection, classification, or scoring behavior.
+    total_person_detections = 0
+    total_on_field_persons = 0
+    total_defense_classifications = 0
+    total_offense_classifications = 0
+    total_unknown_classifications = 0
+
     for frame_result in detector.process_video(input_path):
         frame = frame_result.frame
 
@@ -88,6 +96,12 @@ def analyze_video(
         classified  = classifier.classify(frame, on_field_persons)
         ball_center = frame_result.ball_center()
 
+        total_person_detections += len(frame_result.persons)
+        total_on_field_persons += len(on_field_persons)
+        total_defense_classifications += sum(cp.team == "defense" for cp in classified)
+        total_offense_classifications += sum(cp.team == "offense" for cp in classified)
+        total_unknown_classifications += sum(cp.team == "unknown" for cp in classified)
+
         for cp in classified:
             if cp.team == "defense":
                 scorer.update(frame_result.frame_idx, cp, ball_center)
@@ -98,6 +112,16 @@ def analyze_video(
             "classified": classified,
             "balls":      frame_result.balls,
         })
+
+    logger.info(
+        "Pipeline diagnostics | YOLO persons=%d | on-field=%d | "
+        "defense=%d | offense=%d | unknown=%d",
+        total_person_detections,
+        total_on_field_persons,
+        total_defense_classifications,
+        total_offense_classifications,
+        total_unknown_classifications,
+    )
 
     # ── compute final effort reports ───────────────────────────────────
     reports    = scorer.compute_reports()
