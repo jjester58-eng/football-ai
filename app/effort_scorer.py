@@ -53,6 +53,8 @@ class PlayerEffortReport:
     dist_start: float     # average distance in first third (px)
     dist_end: float       # average distance in last third (px)
     frame_count: int
+    position_group: str = "Defense"
+    position_number: int = 0
 
 
 def _foot_center(bbox: tuple[int, int, int, int]) -> tuple[float, float]:
