@@ -94,8 +94,8 @@ class EffortScorer:
 
         foot = _foot_center(classified_player.detection.bbox)
 
-        if ball_center is not None:
-            d = _dist(foot, ball_center)
+        if target_point is not None:
+            d = _dist(foot, target_point)
         else:
             d = float("nan")
 
@@ -156,7 +156,7 @@ class EffortScorer:
     # ------------------------------------------------------------------
 
     def _score_track(self, track: PlayerTrack) -> Optional[PlayerEffortReport]:
-        dists = [d for d in track.distances_to_ball if not np.isnan(d)]
+        dists = [d for d in track.distances_to_target if not np.isnan(d)]
         if len(dists) < _MIN_FRAMES:
             return None
 
