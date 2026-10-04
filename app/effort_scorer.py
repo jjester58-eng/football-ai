@@ -29,7 +29,7 @@ _MAX_DEFENSIVE_PLAYERS = 11
 
 # Pursuit must be both directional and meaningful.
 _MIN_PURSUIT_RATIO = 0.20
-_MIN_AVG_MOVEMENT_PX_PER_FRAME = 1.5
+_MIN_AVG_MOVEMENT_PX_PER_FRAME = 0.75
 
 
 @dataclass
