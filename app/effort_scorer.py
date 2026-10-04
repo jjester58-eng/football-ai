@@ -28,7 +28,7 @@ _CLOSE_THRESHOLD_PX = 5.0
 _MAX_DEFENSIVE_PLAYERS = 11
 
 # Pursuit must be both directional and meaningful.
-_MIN_PURSUIT_RATIO = 0.30
+_MIN_PURSUIT_RATIO = 0.20
 _MIN_AVG_MOVEMENT_PX_PER_FRAME = 1.5
 
 
@@ -249,3 +249,4 @@ class EffortScorer:
             pursuit_ratio=round(pursuit_ratio, 3),
             net_pursuit_px=round(net_pursuit, 1),
         )
+    
