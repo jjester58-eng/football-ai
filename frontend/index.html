@@ -148,7 +148,7 @@
 
   <header>
     <h1>🏈 Defensive Effort Analyzer</h1>
-    <p>Upload a football play clip — AI will score each blue defender's effort toward the ball.</p>
+    <p>Upload a football play clip — AI will score effort by your 4-2-5 defensive structure.</p>
   </header>
 
   <!-- Drop Zone -->
@@ -178,7 +178,7 @@
     <table>
       <thead>
         <tr>
-          <th>Player ID</th>
+          <th>Defensive Position</th>
           <th>Effort</th>
           <th>Dist. Start (px)</th>
           <th>Dist. End (px)</th>
@@ -292,7 +292,7 @@
 
         resultsBody.insertAdjacentHTML('beforeend', `
           <tr>
-            <td>#${p.track_id}</td>
+            <td><strong>${p.display_name || p.position_group || 'Defense'}</strong></td>
             <td style="font-weight:700;color:${effortColor};font-size:1rem;">${effortText}</td>
             <td>${p.dist_start.toFixed(0)} px</td>
             <td>${p.dist_end.toFixed(0)} px</td>
