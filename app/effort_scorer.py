@@ -125,7 +125,7 @@ class EffortScorer:
                 {
                     "id": t.track_id,
                     "frames": len(t.frame_indices),
-                    "ball_frames": sum(not np.isnan(d) for d in t.distances_to_ball),
+                    "ball_frames": sum(not np.isnan(d) for d in t.distances_to_target),
                 }
                 for t in sorted_tracks[:15]
             ],
