@@ -7,9 +7,10 @@ distance to the play target.
 Definition of effort (Yes / No):
   - Track the ball position across the play.
   - Track each defender's distance to the ball per frame.
-  - Compare average distance in the FIRST third of frames vs the LAST third.
-  - If distance decreased → YES (made effort).
-  - If distance stayed the same or increased → NO.
+  - Compare start/end distance as one signal.
+  - Also measure whether the defender repeatedly moves toward the target.
+  - A moving target can increase final distance even when the defender is
+    pursuing correctly, so start/end distance is no longer the only test.
 
 Ball movement is NOT required — effort is judged regardless of whether
 the ball moved forward.
@@ -43,6 +44,8 @@ class PlayerTrack:
     frame_indices: list[int] = field(default_factory=list)
     # Distance from player foot to ball center each frame (pixels)
     distances_to_target: list[float] = field(default_factory=list)
+    foot_positions: list[tuple[float, float]] = field(default_factory=list)
+    target_positions: list[Optional[tuple[float, float]]] = field(default_factory=list)
 
 
 @dataclass
@@ -53,7 +56,7 @@ class PlayerEffortReport:
     dist_start: float     # average distance in first third (px)
     dist_end: float       # average distance in last third (px)
     frame_count: int
-    position_group: str = "Defense"
+    position_group: str = "Secondary"
     position_number: int = 0
 
 
@@ -103,6 +106,8 @@ class EffortScorer:
 
         self._tracks[tid].frame_indices.append(frame_idx)
         self._tracks[tid].distances_to_target.append(d)
+        self._tracks[tid].foot_positions.append(foot)
+        self._tracks[tid].target_positions.append(target_point)
 
     def compute_reports(self) -> list[PlayerEffortReport]:
         """Return one PlayerEffortReport per tracked defensive player.
@@ -168,8 +173,64 @@ class EffortScorer:
         dist_start = float(np.mean(dists[:third]))
         dist_end   = float(np.mean(dists[-third:]))
 
-        # Closed distance by more than the noise threshold?
-        effort = (dist_start - dist_end) > _CLOSE_THRESHOLD_PX
+        # Primary signal: did the defender repeatedly move toward the target?
+        # This handles a moving ball carrier/receiver better than a simple
+        # start-vs-end distance comparison. A defender can pursue correctly
+        # while the target is moving away, causing final distance to increase.
+        closing_steps = 0
+        meaningful_steps = 0
+        for i in range(1, len(dists)):
+            prev_target = track.target_positions[i - 1]
+            curr_target = track.target_positions[i]
+            prev_foot = track.foot_positions[i - 1]
+            curr_foot = track.foot_positions[i]
+            if prev_target is None or curr_target is None:
+                continue
+
+            target_vector = (
+                prev_target[0] - prev_foot[0],
+                prev_target[1] - prev_foot[1],
+            )
+            target_length = float(np.hypot(target_vector[0], target_vector[1]))
+            if target_length < 1e-6:
+                continue
+
+            defender_move = (
+                curr_foot[0] - prev_foot[0],
+                curr_foot[1] - prev_foot[1],
+            )
+            movement = float(np.hypot(defender_move[0], defender_move[1]))
+            if movement < 1.0:
+                continue
+
+            meaningful_steps += 1
+            toward_target = (
+                defender_move[0] * target_vector[0]
+                + defender_move[1] * target_vector[1]
+            ) / target_length
+            if toward_target > 0.5:
+                closing_steps += 1
+
+        closing_ratio = (
+            closing_steps / meaningful_steps if meaningful_steps else 0.0
+        )
+
+        # Sustained pursuit is now a primary signal. Clear distance closure
+        # still receives credit. The 30% threshold avoids calling a player
+        # effort based on only a few noisy tracking movements.
+        effort = (
+            closing_ratio >= 0.30
+            or (dist_start - dist_end) > _CLOSE_THRESHOLD_PX
+        )
+
+        logger.debug(
+            "Effort score | track=%s | start=%.1f | end=%.1f | closing_ratio=%.2f | effort=%s",
+            track.track_id,
+            dist_start,
+            dist_end,
+            closing_ratio,
+            effort,
+        )
 
         return PlayerEffortReport(
             track_id=track.track_id,
