@@ -1,13 +1,7 @@
 """
 analyzer.py
 -----------
-Orchestrates the full pipeline:
-  1. Detect + track players/ball (YOLOv8 + ByteTrack)
-  2. Detect the green field boundary — only players inside it count
-  3. Classify teams: blue jersey/helmet → defense; white → offense (ignored)
-  4. Score each defender: did they close distance to the ball? → Yes / No
-  5. Render annotated output video (defenders only, Yes/No labels)
-  6. Return JSON report
+Orchestrates football defensive effort analysis.
 """
 
 from __future__ import annotations
@@ -38,19 +32,12 @@ def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 logger = logging.getLogger(__name__)
 
+
 def _assign_defensive_groups(
     frame_store: list[dict],
     reports,
 ) -> dict[int, tuple[str, int]]:
-    """
-    Assign the 11 scored defenders to the user's 4-2-5 structure.
-
-    Uses early-play defender depth relative to the offense instead of
-    exposing ByteTrack IDs to the coach:
-      - 4 closest to the offense = D Line
-      - next 2 = LB
-      - remaining 5 = Secondary
-    """
+    """Assign the 11 scored defenders to the user's 4-2-5 structure."""
     if not reports:
         return {}
 
@@ -71,9 +58,7 @@ def _assign_defensive_groups(
                 offense_points.append(foot)
 
     if not offense_points:
-        logger.warning(
-            "Position grouping: no early offense points; using y-depth fallback."
-        )
+        logger.warning("Position grouping: no early offense points; using y-depth fallback.")
         ordered = sorted(
             (
                 (tid, sum(p[1] for p in pts) / len(pts))
@@ -96,13 +81,10 @@ def _assign_defensive_groups(
         length = (dx * dx + dy * dy) ** 0.5
 
         if length < 1e-6:
-            logger.warning(
-                "Position grouping: offense/defense centers overlap; grouping skipped."
-            )
+            logger.warning("Position grouping: offense/defense centers overlap; grouping skipped.")
             return {}
 
         ux, uy = dx / length, dy / length
-
         projected = []
         for tid, pts in defender_points.items():
             if not pts:
@@ -113,10 +95,7 @@ def _assign_defensive_groups(
             projected.append((tid, projection))
 
         ranked_ids = [
-            tid
-            for tid, _ in sorted(
-                projected, key=lambda item: item[1], reverse=True
-            )
+            tid for tid, _ in sorted(projected, key=lambda item: item[1], reverse=True)
         ]
 
     ranked_ids = ranked_ids[:11]
@@ -137,7 +116,6 @@ def _assign_defensive_groups(
     return group_map
 
 
-
 def analyze_video(
     input_path: str | Path,
     output_dir: str | Path = "outputs",
@@ -146,11 +124,6 @@ def analyze_video(
     device: str = "cpu",
     job_id: str | None = None,
 ) -> dict:
-    """
-    Run the full analysis pipeline on a football play video.
-
-    Returns a dict with job metadata, player effort reports, and output paths.
-    """
     input_path = Path(input_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -159,31 +132,30 @@ def analyze_video(
         job_id = f"{int(time.time())}_{input_path.stem}"
 
     output_video_path = output_dir / f"{job_id}_annotated.mp4"
-    output_json_path  = output_dir / f"{job_id}_report.json"
+    output_json_path = output_dir / f"{job_id}_report.json"
 
     logger.info("Starting analysis | job=%s | input=%s", job_id, input_path)
     t0 = time.perf_counter()
 
-    # ── components ─────────────────────────────────────────────────────
-    detector   = PlayerDetector(model_path=model_path, conf_threshold=conf_threshold, device=device)
+    detector = PlayerDetector(
+        model_path=model_path,
+        conf_threshold=conf_threshold,
+        device=device,
+    )
     classifier = TeamClassifier()
-    field_det  = FieldDetector()
-    scorer     = EffortScorer()
+    field_det = FieldDetector()
+    scorer = EffortScorer()
     target_track_id = None
 
-    # ── video properties ───────────────────────────────────────────────
-    cap    = cv2.VideoCapture(str(input_path))
-    fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    cap = cv2.VideoCapture(str(input_path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
 
-    # ── first pass: detect, classify, accumulate track data ────────────
     frame_store: list[dict] = []
-    field_mask = None   # computed once from first frame
+    field_mask = None
 
-    # Diagnostic counters — these report what each pipeline stage sees
-    # without changing detection, classification, or scoring behavior.
     total_person_detections = 0
     total_on_field_persons = 0
     total_defense_classifications = 0
@@ -193,23 +165,17 @@ def analyze_video(
     for frame_result in detector.process_video(input_path):
         frame = frame_result.frame
 
-        # Compute field mask once (assumes fixed camera)
         if field_mask is None:
             field_mask = field_det.detect(frame)
 
-        # Keep only players whose feet land inside the field
         on_field_persons = [
             p for p in frame_result.persons
             if _foot_on_field(field_mask, p.bbox)
         ]
 
-        classified  = classifier.classify(frame, on_field_persons)
+        classified = classifier.classify(frame, on_field_persons)
         ball_center = frame_result.ball_center()
 
-        # The football is the best target when visible. When it is not
-        # visible, keep following the non-defensive player last associated
-        # with the football. This makes a receiver/ball carrier the stable
-        # target after a catch instead of requiring continuous ball detection.
         target_point = ball_center
         if ball_center is not None:
             candidates = [
@@ -248,10 +214,10 @@ def analyze_video(
                 scorer.update(frame_result.frame_idx, cp, target_point)
 
         frame_store.append({
-            "frame_idx":  frame_result.frame_idx,
-            "frame":      frame,
+            "frame_idx": frame_result.frame_idx,
+            "frame": frame,
             "classified": classified,
-            "balls":      frame_result.balls,
+            "balls": frame_result.balls,
         })
 
     logger.info(
@@ -264,10 +230,8 @@ def analyze_video(
         total_unknown_classifications,
     )
 
-    # ── compute final effort reports ───────────────────────────────────
     reports = scorer.compute_reports()
 
-    # Replace raw ByteTrack IDs with the user's 4-2-5 defensive structure.
     position_groups = _assign_defensive_groups(frame_store, reports)
     for report in reports:
         group, number = position_groups.get(report.track_id, ("Secondary", 0))
@@ -276,13 +240,11 @@ def analyze_video(
 
     effort_map = scorer.per_frame_effort()
 
-    # ── second pass: render annotated video ────────────────────────────
     with Visualizer(output_video_path, fps, width, height) as viz:
         for fd in frame_store:
-            fi    = fd["frame_idx"]
+            fi = fd["frame_idx"]
             frame = fd["frame"]
 
-            # Leaderboard on first, last, and every 30th frame
             if fi == 0 or fi == len(frame_store) - 1 or fi % 30 == 0:
                 frame = draw_summary_overlay(frame, reports)
 
@@ -294,15 +256,14 @@ def analyze_video(
                 field_mask,
             )
 
-    # ── JSON report ────────────────────────────────────────────────────
     report_data = {
-        "job_id":                    job_id,
-        "input_file":                str(input_path),
-        "output_video":              str(output_video_path),
-        "processing_time_seconds":   round(time.perf_counter() - t0, 2),
+        "job_id": job_id,
+        "input_file": str(input_path),
+        "output_video": str(output_video_path),
+        "processing_time_seconds": round(time.perf_counter() - t0, 2),
         "player_reports": [
             {
-                "track_id":    r.track_id,
+                "track_id": r.track_id,
                 "position_group": r.position_group,
                 "position_number": r.position_number,
                 "display_name": (
@@ -310,10 +271,14 @@ def analyze_video(
                     if r.position_number
                     else r.position_group
                 ),
-                "effort":      r.effort,
-                "label":       r.label,
-                "dist_start":  r.dist_start,
-                "dist_end":    r.dist_end,
+                "effort": r.effort,
+                "label": r.label,
+                "dist_start": r.dist_start,
+                "dist_end": r.dist_end,
+                "movement_px": r.movement_px,
+                "avg_movement_px_per_frame": r.avg_movement_px_per_frame,
+                "pursuit_ratio": r.pursuit_ratio,
+                "net_pursuit_px": r.net_pursuit_px,
                 "frame_count": r.frame_count,
             }
             for r in reports
@@ -326,12 +291,11 @@ def analyze_video(
     report_data["output_json"] = str(output_json_path)
     logger.info(
         "Done in %.1fs — %d defenders scored",
-        report_data["processing_time_seconds"], len(reports)
+        report_data["processing_time_seconds"],
+        len(reports),
     )
     return report_data
 
-
-# ── helper ─────────────────────────────────────────────────────────────
 
 def _foot_on_field(mask, bbox: tuple[int, int, int, int]) -> bool:
     """Check if the player's foot position (bottom-center) is on the field."""
