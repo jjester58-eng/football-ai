@@ -38,6 +38,105 @@ def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 logger = logging.getLogger(__name__)
 
+def _assign_defensive_groups(
+    frame_store: list[dict],
+    reports,
+) -> dict[int, tuple[str, int]]:
+    """
+    Assign the 11 scored defenders to the user's 4-2-5 structure.
+
+    Uses early-play defender depth relative to the offense instead of
+    exposing ByteTrack IDs to the coach:
+      - 4 closest to the offense = D Line
+      - next 2 = LB
+      - remaining 5 = Secondary
+    """
+    if not reports:
+        return {}
+
+    report_ids = {r.track_id for r in reports}
+    sample_count = max(1, min(len(frame_store), max(30, len(frame_store) // 5)))
+
+    defender_points: dict[int, list[tuple[float, float]]] = {
+        tid: [] for tid in report_ids
+    }
+    offense_points: list[tuple[float, float]] = []
+
+    for fd in frame_store[:sample_count]:
+        for cp in fd["classified"]:
+            foot = _foot_center(cp.detection.bbox)
+            if cp.team == "defense" and cp.detection.track_id in defender_points:
+                defender_points[cp.detection.track_id].append(foot)
+            elif cp.team == "offense":
+                offense_points.append(foot)
+
+    if not offense_points:
+        logger.warning(
+            "Position grouping: no early offense points; using y-depth fallback."
+        )
+        ordered = sorted(
+            (
+                (tid, sum(p[1] for p in pts) / len(pts))
+                for tid, pts in defender_points.items()
+                if pts
+            ),
+            key=lambda item: item[1],
+        )
+        ranked_ids = [tid for tid, _ in ordered]
+    else:
+        ox = sum(p[0] for p in offense_points) / len(offense_points)
+        oy = sum(p[1] for p in offense_points) / len(offense_points)
+
+        all_def_points = [p for pts in defender_points.values() for p in pts]
+        if not all_def_points:
+            return {}
+
+        dx = ox - (sum(p[0] for p in all_def_points) / len(all_def_points))
+        dy = oy - (sum(p[1] for p in all_def_points) / len(all_def_points))
+        length = (dx * dx + dy * dy) ** 0.5
+
+        if length < 1e-6:
+            logger.warning(
+                "Position grouping: offense/defense centers overlap; grouping skipped."
+            )
+            return {}
+
+        ux, uy = dx / length, dy / length
+
+        projected = []
+        for tid, pts in defender_points.items():
+            if not pts:
+                continue
+            cx = sum(p[0] for p in pts) / len(pts)
+            cy = sum(p[1] for p in pts) / len(pts)
+            projection = (cx - ox) * ux + (cy - oy) * uy
+            projected.append((tid, projection))
+
+        ranked_ids = [
+            tid
+            for tid, _ in sorted(
+                projected, key=lambda item: item[1], reverse=True
+            )
+        ]
+
+    ranked_ids = ranked_ids[:11]
+
+    group_map: dict[int, tuple[str, int]] = {}
+    for index, tid in enumerate(ranked_ids):
+        if index < 4:
+            group_map[tid] = ("D Line", index + 1)
+        elif index < 6:
+            group_map[tid] = ("LB", index - 3)
+        else:
+            group_map[tid] = ("Secondary", index - 5)
+
+    logger.info(
+        "Defensive position groups | %s",
+        {tid: group_map[tid] for tid in ranked_ids},
+    )
+    return group_map
+
+
 
 def analyze_video(
     input_path: str | Path,
@@ -166,7 +265,15 @@ def analyze_video(
     )
 
     # ── compute final effort reports ───────────────────────────────────
-    reports    = scorer.compute_reports()
+    reports = scorer.compute_reports()
+
+    # Replace raw ByteTrack IDs with the user's 4-2-5 defensive structure.
+    position_groups = _assign_defensive_groups(frame_store, reports)
+    for report in reports:
+        group, number = position_groups.get(report.track_id, ("Defense", 0))
+        report.position_group = group
+        report.position_number = number
+
     effort_map = scorer.per_frame_effort()
 
     # ── second pass: render annotated video ────────────────────────────
@@ -196,6 +303,13 @@ def analyze_video(
         "player_reports": [
             {
                 "track_id":    r.track_id,
+                "position_group": r.position_group,
+                "position_number": r.position_number,
+                "display_name": (
+                    f"{r.position_group} {r.position_number}"
+                    if r.position_number
+                    else r.position_group
+                ),
                 "effort":      r.effort,
                 "label":       r.label,
                 "dist_start":  r.dist_start,
