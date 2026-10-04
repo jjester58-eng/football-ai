@@ -270,7 +270,7 @@ def analyze_video(
     # Replace raw ByteTrack IDs with the user's 4-2-5 defensive structure.
     position_groups = _assign_defensive_groups(frame_store, reports)
     for report in reports:
-        group, number = position_groups.get(report.track_id, ("Defense", 0))
+        group, number = position_groups.get(report.track_id, ("Secondary", 0))
         report.position_group = group
         report.position_number = number
 
