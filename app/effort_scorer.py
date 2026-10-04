@@ -1,19 +1,23 @@
 """
 effort_scorer.py
 ----------------
-Determines whether each blue defensive player made an EFFORT to close
-distance to the play target.
+Determines whether each blue defensive player made an EFFORT to pursue
+the ball / ball carrier.
 
 Definition of effort (Yes / No):
-  - Track the ball position across the play.
-  - Track each defender's distance to the ball per frame.
-  - Compare start/end distance as one signal.
-  - Also measure whether the defender repeatedly moves toward the target.
-  - A moving target can increase final distance even when the defender is
-    pursuing correctly, so start/end distance is no longer the only test.
+  - The question is NOT whether the defender ended closer to the ball.
+  - The question is whether the defender meaningfully pursued the ball.
+  - Sustained movement toward the ball / ball carrier is the primary signal.
+  - Start/end distance is supporting evidence only.
+  - A moving receiver or ball carrier can increase final distance even when
+    the defender is pursuing correctly.
 
-Ball movement is NOT required — effort is judged regardless of whether
-the ball moved forward.
+Football grading intent:
+  YES = runs/pursues to the ball.
+  NO  = stands, watches, walks, or otherwise does not meaningfully pursue.
+
+Ball movement is NOT required — effort is judged from defender movement
+toward the current target.
 """
 
 from __future__ import annotations
@@ -26,23 +30,19 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Minimum number of frames a player must appear in to be scored
 _MIN_FRAMES = 15
-
-# How much distance must decrease to count as "closed" (pixels)
 _CLOSE_THRESHOLD_PX = 5.0
-
-# A real defensive unit has exactly 11 players.
-# After all tracking is done, keep only the top N track IDs by frame count.
-# This automatically discards short-lived ghost tracks caused by ID switches.
 _MAX_DEFENSIVE_PLAYERS = 11
+
+# A defender must show repeated directional movement toward the target.
+# This is intentionally the primary effort test; final distance is not.
+_MIN_PURSUIT_RATIO = 0.30
 
 
 @dataclass
 class PlayerTrack:
     track_id: int
     frame_indices: list[int] = field(default_factory=list)
-    # Distance from player foot to ball center each frame (pixels)
     distances_to_target: list[float] = field(default_factory=list)
     foot_positions: list[tuple[float, float]] = field(default_factory=list)
     target_positions: list[Optional[tuple[float, float]]] = field(default_factory=list)
@@ -51,10 +51,10 @@ class PlayerTrack:
 @dataclass
 class PlayerEffortReport:
     track_id: int
-    effort: bool          # True = Yes, False = No
-    label: str            # "EFFORT ✓" | "NO EFFORT ✗"
-    dist_start: float     # average distance in first third (px)
-    dist_end: float       # average distance in last third (px)
+    effort: bool
+    label: str
+    dist_start: float
+    dist_end: float
     frame_count: int
     position_group: str = "Secondary"
     position_number: int = 0
@@ -74,14 +74,8 @@ class EffortScorer:
     """
     Accumulates per-frame observations then computes Yes/No effort reports.
 
-    Usage::
-        scorer = EffortScorer()
-        for frame_result, classified_players in ...:
-            ball_center = frame_result.ball_center()
-            for cp in classified_players:
-                if cp.team == "defense":
-                    scorer.update(frame_result.frame_idx, cp, ball_center)
-        reports = scorer.compute_reports()
+    Effort means pursuit toward the ball / ball carrier, not simply getting
+    closer in absolute distance.
     """
 
     def __init__(self) -> None:
@@ -90,7 +84,7 @@ class EffortScorer:
     def update(
         self,
         frame_idx: int,
-        classified_player,          # ClassifiedPlayer
+        classified_player,
         target_point: Optional[tuple[float, float]],
     ) -> None:
         tid = classified_player.detection.track_id
@@ -98,33 +92,22 @@ class EffortScorer:
             self._tracks[tid] = PlayerTrack(track_id=tid)
 
         foot = _foot_center(classified_player.detection.bbox)
+        d = _dist(foot, target_point) if target_point is not None else float("nan")
 
-        if target_point is not None:
-            d = _dist(foot, target_point)
-        else:
-            d = float("nan")
-
-        self._tracks[tid].frame_indices.append(frame_idx)
-        self._tracks[tid].distances_to_target.append(d)
-        self._tracks[tid].foot_positions.append(foot)
-        self._tracks[tid].target_positions.append(target_point)
+        track = self._tracks[tid]
+        track.frame_indices.append(frame_idx)
+        track.distances_to_target.append(d)
+        track.foot_positions.append(foot)
+        track.target_positions.append(target_point)
 
     def compute_reports(self) -> list[PlayerEffortReport]:
-        """Return one PlayerEffortReport per tracked defensive player.
-
-        Only the top _MAX_DEFENSIVE_PLAYERS track IDs (by frame count) are
-        kept. Short-lived ghost tracks caused by ByteTrack ID switches are
-        automatically discarded.
-        """
-        # Sort all tracks by how many frames they appear in (most = real player)
+        """Return one effort report per tracked defensive player."""
         sorted_tracks = sorted(
             self._tracks.values(),
             key=lambda t: len(t.frame_indices),
             reverse=True,
         )
 
-        # Diagnostic only: show whether defensive tracks have enough usable
-        # observations to reach the scoring stage. This does not change scoring.
         logger.info(
             "Scorer diagnostics | unique_defense_tracks=%d | top_tracks=%s",
             len(sorted_tracks),
@@ -138,58 +121,65 @@ class EffortScorer:
             ],
         )
 
-        # Keep only the top 11
-        top_tracks = sorted_tracks[:_MAX_DEFENSIVE_PLAYERS]
-
         reports: list[PlayerEffortReport] = []
-        for track in top_tracks:
-            r = self._score_track(track)
-            if r:
-                reports.append(r)
+        for track in sorted_tracks[:_MAX_DEFENSIVE_PLAYERS]:
+            report = self._score_track(track)
+            if report:
+                reports.append(report)
 
-        # Sort final list: effort first, then by most distance closed
         return sorted(reports, key=lambda r: (not r.effort, r.dist_end - r.dist_start))
 
     def per_frame_effort(self) -> dict[int, bool | None]:
-        """
-        Returns {track_id: effort_bool} after compute_reports() is called.
-        Used by the visualizer for per-frame annotation.
-        """
         result: dict[int, bool | None] = {}
-        for r in self.compute_reports():
-            result[r.track_id] = r.effort
+        for report in self.compute_reports():
+            result[report.track_id] = report.effort
         return result
 
-    # ------------------------------------------------------------------
-
     def _score_track(self, track: PlayerTrack) -> Optional[PlayerEffortReport]:
-        dists = [d for d in track.distances_to_target if not np.isnan(d)]
-        if len(dists) < _MIN_FRAMES:
+        # Keep distance, defender position, and target position aligned.
+        # Previously dists removed NaNs independently, which could shift the
+        # indexes used for the pursuit-direction calculation.
+        observations = [
+            (distance, foot, target)
+            for distance, foot, target in zip(
+                track.distances_to_target,
+                track.foot_positions,
+                track.target_positions,
+            )
+            if not np.isnan(distance) and target is not None
+        ]
+
+        if len(observations) < _MIN_FRAMES:
             return None
+
+        dists = [item[0] for item in observations]
+        feet = [item[1] for item in observations]
+        targets = [item[2] for item in observations]
 
         n = len(dists)
         third = max(1, n // 3)
-
         dist_start = float(np.mean(dists[:third]))
-        dist_end   = float(np.mean(dists[-third:]))
+        dist_end = float(np.mean(dists[-third:]))
 
-        # Primary signal: did the defender repeatedly move toward the target?
-        # This handles a moving ball carrier/receiver better than a simple
-        # start-vs-end distance comparison. A defender can pursue correctly
-        # while the target is moving away, causing final distance to increase.
-        closing_steps = 0
+        # Primary signal:
+        # Did the defender repeatedly move in the direction of the ball?
+        #
+        # This intentionally does NOT require the defender's final distance
+        # to be smaller. A receiver/ball carrier can outrun a defender while
+        # the defender is still giving full pursuit effort.
+        pursuit_steps = 0
         meaningful_steps = 0
-        for i in range(1, len(dists)):
-            prev_target = track.target_positions[i - 1]
-            curr_target = track.target_positions[i]
-            prev_foot = track.foot_positions[i - 1]
-            curr_foot = track.foot_positions[i]
-            if prev_target is None or curr_target is None:
-                continue
+        pursuit_distance = 0.0
+        away_distance = 0.0
+
+        for i in range(1, len(feet)):
+            prev_foot = feet[i - 1]
+            curr_foot = feet[i]
+            target = targets[i - 1]
 
             target_vector = (
-                prev_target[0] - prev_foot[0],
-                prev_target[1] - prev_foot[1],
+                target[0] - prev_foot[0],
+                target[1] - prev_foot[1],
             )
             target_length = float(np.hypot(target_vector[0], target_vector[1]))
             if target_length < 1e-6:
@@ -200,35 +190,59 @@ class EffortScorer:
                 curr_foot[1] - prev_foot[1],
             )
             movement = float(np.hypot(defender_move[0], defender_move[1]))
+
+            # Ignore detector jitter / stationary players.
             if movement < 1.0:
                 continue
 
             meaningful_steps += 1
-            toward_target = (
+            projection = (
                 defender_move[0] * target_vector[0]
                 + defender_move[1] * target_vector[1]
             ) / target_length
-            if toward_target > 0.5:
-                closing_steps += 1
 
-        closing_ratio = (
-            closing_steps / meaningful_steps if meaningful_steps else 0.0
+            if projection > 0.5:
+                pursuit_steps += 1
+                pursuit_distance += projection
+            elif projection < -0.5:
+                away_distance += abs(projection)
+
+        pursuit_ratio = (
+            pursuit_steps / meaningful_steps if meaningful_steps else 0.0
         )
 
-        # Sustained pursuit is now a primary signal. Clear distance closure
-        # still receives credit. The 30% threshold avoids calling a player
-        # effort based on only a few noisy tracking movements.
+        # Pursuit direction is the football grading signal. Distance closure
+        # is only a supporting signal for cases where the target is relatively
+        # stationary. A defender who pursues a moving ball carrier can still
+        # finish farther away and should receive effort credit.
+        net_pursuit = pursuit_distance - away_distance
         effort = (
-            closing_ratio >= 0.30
-            or (dist_start - dist_end) > _CLOSE_THRESHOLD_PX
+            meaningful_steps > 0
+            and pursuit_ratio >= _MIN_PURSUIT_RATIO
+            and net_pursuit > 0
         )
+
+        # Preserve clear closure as a secondary signal, but do not let it
+        # override the pursuit test for a defender who is moving away from
+        # the ball.
+        if (
+            (dist_start - dist_end) > _CLOSE_THRESHOLD_PX
+            and pursuit_ratio >= 0.20
+            and net_pursuit > 0
+        ):
+            effort = True
 
         logger.debug(
-            "Effort score | track=%s | start=%.1f | end=%.1f | closing_ratio=%.2f | effort=%s",
+            "Effort score | track=%s | start=%.1f | end=%.1f | "
+            "pursuit_ratio=%.2f | pursuit_px=%.1f | away_px=%.1f | "
+            "net_pursuit=%.1f | effort=%s",
             track.track_id,
             dist_start,
             dist_end,
-            closing_ratio,
+            pursuit_ratio,
+            pursuit_distance,
+            away_distance,
+            net_pursuit,
             effort,
         )
 
