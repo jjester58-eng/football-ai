@@ -121,126 +121,469 @@
     </div>
   </div>
 
+  
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    header { text-align: center; margin-bottom: 2.5rem; }
+    header h1 { font-size: 2rem; color: #58a6ff; }
+    header p { color: #8b949e; margin-top: .4rem; }
+
+    #drop-zone {
+      width: 100%; max-width: 760px; border: 2px dashed #30363d;
+      border-radius: 12px; padding: 2.5rem 2rem; text-align: center;
+      cursor: pointer; transition: border-color .2s, background .2s;
+    }
+    #drop-zone.drag-over { border-color: #58a6ff; background: #161b22; }
+    #drop-zone svg { width: 48px; opacity: .5; margin-bottom: 1rem; }
+    #drop-zone p { color: #8b949e; font-size: .95rem; }
+    #drop-zone span { color: #58a6ff; font-weight: 600; cursor: pointer; }
+    #file-input { display: none; }
+
+    #selected-files {
+      display: none; width: 100%; max-width: 760px; margin-top: 1rem;
+      background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+      padding: 1rem 1.2rem;
+    }
+    #selected-files h3 { color: #8b949e; font-size: .85rem; margin-bottom: .6rem; }
+    .file-item { color: #e6edf3; font-size: .9rem; padding: .3rem 0; }
+    .file-item::before { content: '🎬 '; }
+
+    #upload-btn {
+      display: none; margin-top: 1.5rem; padding: .7rem 2.2rem;
+      background: #238636; border: none; border-radius: 8px; color: #fff;
+      font-size: 1rem; font-weight: 600; cursor: pointer; transition: background .2s;
+    }
+    #upload-btn:hover { background: #2ea043; }
+    #upload-btn:disabled { opacity: .55; cursor: wait; }
+
+    #status-box {
+      display: none; margin-top: 2rem; max-width: 760px; width: 100%;
+      background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+    }
+    #status-text { color: #8b949e; font-size: .9rem; }
+    .spinner {
+      display: inline-block; width: 14px; height: 14px; border: 2px solid #58a6ff;
+      border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite;
+      margin-right: 6px; vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #results { display: none; margin-top: 2rem; max-width: 1100px; width: 100%; }
+    #results h2 { color: #58a6ff; margin-bottom: 1rem; }
+
+    .summary-card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+      padding: 1.2rem; margin-bottom: 1.2rem;
+    }
+    .summary-card h3 { color: #e6edf3; margin-bottom: .9rem; }
+    .summary-note { color: #8b949e; font-size: .82rem; margin-top: .8rem; }
+    .group-summary {
+      display: grid; grid-template-columns: minmax(150px, 1fr) 90px 120px 100px 100px;
+      gap: .5rem; align-items: center; padding: .7rem .8rem;
+      border-top: 1px solid #21262d;
+    }
+    .group-summary:first-of-type { border-top: 0; }
+    .group-name { font-weight: 700; }
+    .group-stat { color: #8b949e; font-size: .85rem; text-align: center; }
+    .group-percent { font-size: 1.2rem; font-weight: 700; text-align: center; }
+    .group-percent.empty { color: #8b949e; font-weight: 400; }
+    .group-yes { color: #3fb950; }
+    .group-no { color: #f85149; }
+
+    .group-section {
+      margin-bottom: 1rem; background: #0d1117;
+      border: 1px solid #30363d; border-radius: 10px; overflow: hidden;
+    }
+    .group-section > summary {
+      cursor: pointer; list-style: none; padding: 1rem 1.1rem;
+      background: #161b22; font-weight: 700;
+    }
+    .group-section > summary::-webkit-details-marker { display: none; }
+    .group-section > summary::before { content: '▶'; margin-right: .6rem; color: #58a6ff; font-size: .75rem; }
+    .group-section[open] > summary::before { content: '▼'; }
+    .group-content { padding: .8rem; }
+
+    .clip-section {
+      margin: .5rem 0; border: 1px solid #21262d; border-radius: 8px; overflow: hidden;
+    }
+    .clip-section > summary {
+      cursor: pointer; list-style: none; padding: .8rem 1rem;
+      background: #161b22; display: grid; grid-template-columns: 1fr 100px 100px 100px;
+      gap: .5rem; align-items: center;
+    }
+    .clip-section > summary::-webkit-details-marker { display: none; }
+    .clip-section > summary::before { content: '▶'; color: #58a6ff; font-size: .7rem; }
+    .clip-section[open] > summary::before { content: '▼'; }
+    .clip-name { font-weight: 600; }
+    .clip-stat { color: #8b949e; text-align: center; font-size: .85rem; }
+    .clip-effort { font-weight: 700; text-align: center; }
+
+    .clip-body { padding: .9rem; }
+    .clip-video {
+      width: 100%; max-height: 520px; background: #000;
+      border-radius: 8px; border: 1px solid #30363d; margin-bottom: 1rem;
+    }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .88rem; min-width: 820px; }
+    thead th {
+      background: #161b22; color: #8b949e; padding: .6rem .9rem;
+      text-align: left; border-bottom: 1px solid #30363d;
+    }
+    tbody tr:nth-child(even) { background: #161b22; }
+    tbody td { padding: .55rem .9rem; border-bottom: 1px solid #21262d; }
+    .diagnostic { color: #8b949e; font-size: .85rem; }
+    .effort-yes { color: #3fb950; font-weight: 700; }
+    .effort-no { color: #f85149; font-weight: 700; }
+
+    .empty-group {
+      color: #8b949e; padding: 1rem; font-size: .9rem;
+      background: #161b22; border-radius: 7px;
+    }
+
+    #error-msg {
+      display: none; color: #f85149; margin-top: 1rem; font-size: .9rem;
+    }
+
+    @media (max-width: 760px) {
+      .group-summary { grid-template-columns: 1fr 70px 80px 70px 70px; }
+      .clip-section > summary { grid-template-columns: 1fr 70px 70px 70px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🏈 Defensive Effort Analyzer</h1>
+    <p>Upload football play clips — AI scores effort by your 4-2-5 defensive structure.</p>
+  </header>
+
+  <div id="drop-zone">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="1.5">
+      <path d="M12 16V4m0 0L8 8m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke-linecap="round"/>
+    </svg>
+    <p>Drag & drop videos here, or <span onclick="document.getElementById('file-input').click()">browse</span></p>
+    <p style="margin-top:.4rem;font-size:.8rem;">Select one or multiple .mp4 · .mov · .avi · .mkv clips</p>
+    <input type="file" id="file-input" accept=".mp4,.mov,.avi,.mkv" multiple />
+  </div>
+
+  <div id="selected-files">
+    <h3>Selected clips</h3>
+    <div id="file-list"></div>
+  </div>
+
+  <button id="upload-btn">Analyze Clips ▶</button>
+  <p id="error-msg"></p>
+
+  <div id="status-box">
+    <span class="spinner"></span>
+    <span id="status-text">Uploading…</span>
+  </div>
+
+  <div id="results">
+    <h2>Defensive Effort Report</h2>
+    <div id="summary-card" class="summary-card"></div>
+    <div id="group-results"></div>
+  </div>
+
   <script>
     const API = '';
 
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
+    const selectedFilesBox = document.getElementById('selected-files');
+    const fileList = document.getElementById('file-list');
     const uploadBtn = document.getElementById('upload-btn');
     const statusBox = document.getElementById('status-box');
     const statusText = document.getElementById('status-text');
     const resultsDiv = document.getElementById('results');
+    const summaryCard = document.getElementById('summary-card');
+    const groupResults = document.getElementById('group-results');
     const errorMsg = document.getElementById('error-msg');
-    const resultVideo = document.getElementById('result-video');
-    const resultsBody = document.getElementById('results-body');
 
-    let selectedFile = null;
-    let pollInterval = null;
+    let selectedFiles = [];
 
     dropZone.addEventListener('dragover', e => {
       e.preventDefault();
       dropZone.classList.add('drag-over');
     });
+
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+
     dropZone.addEventListener('drop', e => {
       e.preventDefault();
       dropZone.classList.remove('drag-over');
-      handleFile(e.dataTransfer.files[0]);
+      handleFiles(Array.from(e.dataTransfer.files));
     });
-    fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
 
-    function handleFile(file) {
-      if (!file) return;
-      selectedFile = file;
-      dropZone.querySelector('p').textContent = `Selected: ${file.name}`;
+    fileInput.addEventListener('change', () => {
+      handleFiles(Array.from(fileInput.files || []));
+    });
+
+    function handleFiles(files) {
+      const valid = files.filter(file => {
+        const ext = '.' + file.name.split('.').pop().toLowerCase();
+        return ['.mp4', '.mov', '.avi', '.mkv'].includes(ext);
+      });
+
+      if (!valid.length) {
+        showError('Please select .mp4, .mov, .avi, or .mkv video files.');
+        return;
+      }
+
+      if (valid.length > 12) {
+        showError('Please analyze no more than 12 clips at a time.');
+        return;
+      }
+
+      selectedFiles = valid;
+      fileList.innerHTML = selectedFiles
+        .map(file => '<div class="file-item">' + escapeHtml(file.name) + '</div>')
+        .join('');
+      selectedFilesBox.style.display = 'block';
       uploadBtn.style.display = 'inline-block';
+      uploadBtn.textContent = selectedFiles.length === 1 ? 'Analyze Play ▶' : 'Analyze ' + selectedFiles.length + ' Clips ▶';
       errorMsg.style.display = 'none';
     }
 
     uploadBtn.addEventListener('click', async () => {
-      if (!selectedFile) return;
+      if (!selectedFiles.length) return;
 
       uploadBtn.disabled = true;
       statusBox.style.display = 'block';
-      statusText.textContent = 'Uploading…';
       resultsDiv.style.display = 'none';
       errorMsg.style.display = 'none';
 
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-
       try {
-        const resp = await fetch(`${API}/analyze`, { method: 'POST', body: formData });
-        if (!resp.ok) {
-          const err = await resp.json();
-          throw new Error(err.detail || `HTTP ${resp.status}`);
+        statusText.textContent = 'Uploading ' + selectedFiles.length + ' clip' + (selectedFiles.length === 1 ? '' : 's') + '…';
+
+        const jobs = [];
+        for (let i = 0; i < selectedFiles.length; i++) {
+          statusText.textContent = 'Uploading clip ' + (i + 1) + ' of ' + selectedFiles.length + '…';
+          const formData = new FormData();
+          formData.append('file', selectedFiles[i]);
+
+          const resp = await fetch(API + '/analyze', { method: 'POST', body: formData });
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || 'Upload failed for ' + selectedFiles[i].name);
+          }
+
+          const data = await resp.json();
+          jobs.push({ jobId: data.job_id, filename: selectedFiles[i].name });
         }
-        const { job_id } = await resp.json();
-        statusText.textContent = 'Processing — detecting players and scoring pursuit effort…';
-        pollForResult(job_id);
+
+        statusText.textContent = 'Analyzing ' + jobs.length + ' clip' + (jobs.length === 1 ? '' : 's') + '…';
+        const results = await Promise.all(jobs.map(job => pollForResult(job.jobId, job.filename)));
+
+        showResults(results);
       } catch (err) {
         showError(err.message);
       }
     });
 
-    function pollForResult(jobId) {
-      pollInterval = setInterval(async () => {
-        try {
-          const resp = await fetch(`${API}/result/${jobId}`);
-          const data = await resp.json();
+    function pollForResult(jobId, filename) {
+      return new Promise((resolve, reject) => {
+        const started = Date.now();
 
-          if (data.status === 'done') {
-            clearInterval(pollInterval);
-            showResults(jobId, data);
-          } else if (data.status === 'error') {
-            clearInterval(pollInterval);
-            showError('Analysis failed on the server. Check server logs.');
+        const poll = async () => {
+          try {
+            const resp = await fetch(API + '/result/' + jobId);
+            const data = await resp.json();
+
+            if (data.status === 'done') {
+              resolve({ ...data, filename, jobId });
+              return;
+            }
+
+            if (data.status === 'error') {
+              reject(new Error('Analysis failed for ' + filename));
+              return;
+            }
+
+            const elapsed = Math.round((Date.now() - started) / 1000);
+            statusText.textContent = 'Analyzing clips… ' + filename + ' (' + elapsed + 's)';
+            setTimeout(poll, 2500);
+          } catch (err) {
+            reject(err);
           }
-        } catch (err) {
-          clearInterval(pollInterval);
-          showError(err.message);
-        }
-      }, 2500);
+        };
+
+        poll();
+      });
     }
 
-    function showResults(jobId, data) {
+    function showResults(clipResults) {
       statusBox.style.display = 'none';
       resultsDiv.style.display = 'block';
       uploadBtn.disabled = false;
 
-      resultVideo.src = `${API}/video/${jobId}`;
-      resultsBody.innerHTML = '';
+      const groups = ['D Line', 'LB', 'Secondary'];
+      const groupData = Object.fromEntries(
+        groups.map(group => [group, { yes: 0, no: 0, clips: [] }])
+      );
 
-      const players = data.player_reports || [];
-      if (players.length === 0) {
-        resultsBody.innerHTML = '<tr><td colspan="8" style="color:#8b949e;text-align:center;">No defensive players detected.</td></tr>';
-        return;
+      for (const clip of clipResults) {
+        const players = clip.player_reports || [];
+
+        for (const group of groups) {
+          const playersInGroup = players.filter(p => p.position_group === group);
+          if (!playersInGroup.length) continue;
+
+          const yes = playersInGroup.filter(p => p.effort).length;
+          const no = playersInGroup.length - yes;
+
+          groupData[group].yes += yes;
+          groupData[group].no += no;
+          groupData[group].clips.push({
+            filename: clip.filename,
+            jobId: clip.jobId,
+            videoUrl: clip.video_url || (API + '/video/' + clip.jobId),
+            players: playersInGroup,
+            yes,
+            no
+          });
+        }
       }
 
-      for (const p of players) {
-        const effortColor = p.effort ? '#3fb950' : '#f85149';
-        const effortText = p.effort ? '✓ YES' : '✗ NO';
+      renderSummary(groupData, clipResults.length);
+      renderGroups(groupData);
+    }
 
-        resultsBody.insertAdjacentHTML('beforeend', `
-          <tr>
-            <td><strong>${p.display_name || p.position_group || 'Secondary'}</strong></td>
-            <td style="font-weight:700;color:${effortColor};font-size:1rem;">${effortText}</td>
-            <td>${Number(p.dist_start).toFixed(0)} px</td>
-            <td>${Number(p.dist_end).toFixed(0)} px</td>
-            <td class="diagnostic">${Number(p.movement_px).toFixed(0)} px</td>
-            <td class="diagnostic">${Number(p.avg_movement_px_per_frame).toFixed(2)} px/frame</td>
-            <td class="diagnostic">${(Number(p.pursuit_ratio) * 100).toFixed(0)}%</td>
-            <td class="diagnostic">${Number(p.net_pursuit_px).toFixed(0)} px</td>
-          </tr>
-        `);
-      }
+    function renderSummary(groupData, clipCount) {
+      const rows = Object.entries(groupData).map(([group, data]) => {
+        const graded = data.yes + data.no;
+        const pct = graded ? Math.round((data.yes / graded) * 100) : null;
+
+        return `
+          <div class="group-summary">
+            <div class="group-name">${group}</div>
+            <div class="group-stat">${data.clips.length} clips</div>
+            <div class="group-percent ${pct === null ? 'empty' : ''}">${pct === null ? '—' : pct + '%'}</div>
+            <div class="group-stat group-yes">${data.yes} YES</div>
+            <div class="group-stat group-no">${data.no} NO</div>
+          </div>
+        `;
+      }).join('');
+
+      summaryCard.innerHTML = `
+        <h3>${clipCount} clip${clipCount === 1 ? '' : 's'} analyzed</h3>
+        ${rows}
+        <div class="summary-note">Missing groups are not counted as NO. Group effort is YES ÷ (YES + NO) for players actually graded.</div>
+      `;
+    }
+
+    function renderGroups(groupData) {
+      groupResults.innerHTML = Object.entries(groupData).map(([group, data]) => {
+        const graded = data.yes + data.no;
+        const pct = graded ? Math.round((data.yes / graded) * 100) : null;
+
+        if (!data.clips.length) {
+          return `
+            <details class="group-section">
+              <summary>${group} — — (not detected in these clips)</summary>
+              <div class="group-content">
+                <div class="empty-group">No ${group} players were detected/graded in these clips.</div>
+              </div>
+            </details>
+          `;
+        }
+
+        const clips = data.clips.map(clip => {
+          const clipGraded = clip.yes + clip.no;
+          const clipPct = clipGraded ? Math.round((clip.yes / clipGraded) * 100) : null;
+
+          const rows = clip.players.map(p => {
+            const effortClass = p.effort ? 'effort-yes' : 'effort-no';
+            const effortText = p.effort ? '✓ YES' : '✗ NO';
+
+            return `
+              <tr>
+                <td><strong>${escapeHtml(p.display_name || p.position_group || group)}</strong></td>
+                <td class="${effortClass}">${effortText}</td>
+                <td>${num(p.dist_start)} px</td>
+                <td>${num(p.dist_end)} px</td>
+                <td class="diagnostic">${num(p.movement_px)} px</td>
+                <td class="diagnostic">${num(p.avg_movement_px_per_frame, 2)} px/frame</td>
+                <td class="diagnostic">${Math.round(Number(p.pursuit_ratio || 0) * 100)}%</td>
+                <td class="diagnostic">${num(p.net_pursuit_px)} px</td>
+              </tr>
+            `;
+          }).join('');
+
+          return `
+            <details class="clip-section">
+              <summary>
+                <span class="clip-name">${escapeHtml(clip.filename)}</span>
+                <span class="clip-stat">${clip.yes} YES / ${clip.no} NO</span>
+                <span class="clip-effort">${clipPct}%</span>
+                <span class="clip-stat">${clip.players.length} graded</span>
+              </summary>
+              <div class="clip-body">
+                <video class="clip-video" controls preload="metadata" src="${clip.videoUrl}"></video>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Defensive Position</th>
+                        <th>Effort</th>
+                        <th>Dist. Start</th>
+                        <th>Dist. End</th>
+                        <th>Movement</th>
+                        <th>Avg Speed</th>
+                        <th>Pursuit %</th>
+                        <th>Net Pursuit</th>
+                      </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                  </table>
+                </div>
+              </div>
+            </details>
+          `;
+        }).join('');
+
+        return `
+          <details class="group-section">
+            <summary>${group} — ${pct}% (${data.yes} YES / ${data.no} NO)</summary>
+            <div class="group-content">${clips}</div>
+          </details>
+        `;
+      }).join('');
+    }
+
+    function num(value, decimals = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n.toFixed(decimals) : '—';
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
     }
 
     function showError(msg) {
       statusBox.style.display = 'none';
       uploadBtn.disabled = false;
       errorMsg.style.display = 'block';
-      errorMsg.textContent = `Error: ${msg}`;
+      errorMsg.textContent = 'Error: ' + msg;
     }
   </script>
 </body>
