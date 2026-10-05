@@ -250,41 +250,63 @@
       errorMsg.style.display = 'none';
 
       try {
-        statusText.textContent = 'Uploading ' + selectedFiles.length + ' clip' + (selectedFiles.length === 1 ? '' : 's') + '…';
+        const results = [];
 
-        const jobs = [];
+        // Process one clip at a time so the computer does not have to run
+        // several YOLO tracking jobs simultaneously.
         for (let i = 0; i < selectedFiles.length; i++) {
-          statusText.textContent = 'Uploading clip ' + (i + 1) + ' of ' + selectedFiles.length + '…';
+          const clipNumber = i + 1;
+          const filename = selectedFiles[i].name;
+
+          statusText.textContent = 'Uploading clip ' + clipNumber + ' of ' + selectedFiles.length + ': ' + filename + '…';
+
           const formData = new FormData();
           formData.append('file', selectedFiles[i]);
 
           const resp = await fetch(API + '/analyze', { method: 'POST', body: formData });
+          const data = await resp.json().catch(() => ({}));
+
           if (!resp.ok) {
-            const err = await resp.json().catch(() => ({}));
-            throw new Error(err.detail || 'Upload failed for ' + selectedFiles[i].name);
+            throw new Error(data.detail || data.error || 'Upload failed for ' + filename);
           }
 
-          const data = await resp.json();
-          jobs.push({ jobId: data.job_id, filename: selectedFiles[i].name });
+          if (!data.job_id) {
+            throw new Error('The server did not return an analysis job for ' + filename);
+          }
+
+          statusText.textContent = 'Analyzing clip ' + clipNumber + ' of ' + selectedFiles.length + ': ' + filename + ' — starting…';
+
+          const result = await pollForResult(
+            data.job_id,
+            filename,
+            clipNumber,
+            selectedFiles.length
+          );
+
+          results.push(result);
+
+          statusText.textContent = '✓ Clip ' + clipNumber + ' of ' + selectedFiles.length + ' complete — ' + filename;
+
+          // Give the browser a moment to display the completion message
+          // before the next upload starts.
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
 
-        statusText.textContent = 'Analyzing ' + jobs.length + ' clip' + (jobs.length === 1 ? '' : 's') + '…';
-        const results = await Promise.all(jobs.map(job => pollForResult(job.jobId, job.filename)));
-
+        statusText.textContent = 'All ' + results.length + ' clip' + (results.length === 1 ? '' : 's') + ' complete. Building report…';
         showResults(results);
       } catch (err) {
-        showError(err.message);
+        showError(err.message || 'Analysis failed.');
       }
     });
 
-    function pollForResult(jobId, filename) {
+    function pollForResult(jobId, filename, clipNumber, clipCount) {
       return new Promise((resolve, reject) => {
         const started = Date.now();
 
         const poll = async () => {
           try {
             const resp = await fetch(API + '/result/' + jobId);
-            const data = await resp.json();
+            const data = await resp.json().catch(() => ({}));
 
             if (data.status === 'done') {
               resolve({ ...data, filename, jobId });
@@ -292,12 +314,22 @@
             }
 
             if (data.status === 'error') {
-              reject(new Error('Analysis failed for ' + filename));
+              const detail = data.detail || data.error || data.message || 'Unknown server error';
+              reject(new Error('Analysis failed for clip ' + clipNumber + ' of ' + clipCount + ' (' + filename + '): ' + detail));
+              return;
+            }
+
+            if (!resp.ok) {
+              const detail = data.detail || data.error || ('HTTP ' + resp.status);
+              reject(new Error('Could not check analysis for ' + filename + ': ' + detail));
               return;
             }
 
             const elapsed = Math.round((Date.now() - started) / 1000);
-            statusText.textContent = 'Analyzing clips… ' + filename + ' (' + elapsed + 's)';
+            statusText.textContent =
+              'Analyzing clip ' + clipNumber + ' of ' + clipCount +
+              ': ' + filename + ' — ' + elapsed + 's elapsed';
+
             setTimeout(poll, 2500);
           } catch (err) {
             reject(err);
