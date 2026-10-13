@@ -320,10 +320,29 @@ def analyze_video(
         report.position_group = group
         report.position_number = number
 
+        # Linebackers combine the D Line's directional pursuit requirement
+        # with the Secondary's stronger movement exception for developing plays.
+        # Keep this position-specific so D Line and Secondary grading is unchanged.
+        if group == "LB":
+            standard_pursuit = (
+                report.pursuit_ratio >= 0.20
+                and report.avg_movement_px_per_frame >= 0.75
+                and report.net_pursuit_px > 0
+            )
+            sustained_pursuit_exception = (
+                report.net_pursuit_px <= 0
+                and report.movement_px >= 150.0
+                and report.avg_movement_px_per_frame >= 1.5
+                and report.pursuit_ratio >= 0.30
+            )
+            if standard_pursuit or sustained_pursuit_exception:
+                report.effort = True
+                report.label = "EFFORT ✓"
+
         # Secondary players can show valid pursuit of a developing play while
         # moving laterally across the field. A negative net-pursuit score can
         # reject that effort when the selected target changes or is imperfect.
-        # Use a Secondary-only alternate rule; do not alter D Line or LB grades.
+        # Keep the existing Secondary-only exception unchanged.
         if (
             group == "Secondary"
             and report.movement_px >= 150.0
