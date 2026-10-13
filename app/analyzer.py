@@ -85,18 +85,26 @@ def _select_target_points(frame_store: list[dict]) -> list[tuple[float, float] |
         candidates = [cp for cp in classified if cp.team != "defense"]
         by_track = {cp.detection.track_id: cp for cp in candidates}
 
-        if ball_center is not None and candidates:
-            # Prefer a confidently classified offensive player when similarly
-            # close to the ball; otherwise choose the nearest non-defender.
-            target = min(
-                candidates,
-                key=lambda cp: _distance(
-                    _foot_center(cp.detection.bbox), ball_center
-                ),
-            )
-            target_track_id = target.detection.track_id
-            last_target_point = _foot_center(target.detection.bbox)
+        if ball_center is not None:
+            # When the ball is detected, pursue the ball itself rather than
+            # the nearest offensive player's feet. On interceptions, tipped
+            # passes, and throws toward a defender, the nearest non-defender
+            # can be the wrong target and make genuine defensive pursuit look
+            # like movement away from the play.
+            last_target_point = ball_center
             ball_target_frames += 1
+
+            # Keep a likely player target ready for frames when the ball is
+            # temporarily not detected. This fallback does not replace the
+            # ball point on frames where the ball is visible.
+            if candidates:
+                nearest = min(
+                    candidates,
+                    key=lambda cp: _distance(
+                        _foot_center(cp.detection.bbox), ball_center
+                    ),
+                )
+                target_track_id = nearest.detection.track_id
         elif target_track_id in by_track:
             last_target_point = _foot_center(
                 by_track[target_track_id].detection.bbox
@@ -312,7 +320,40 @@ def analyze_video(
         report.position_group = group
         report.position_number = number
 
-    effort_map = scorer.per_frame_effort()
+        # Linebackers combine the D Line's directional pursuit requirement
+        # with the Secondary's stronger movement exception for developing plays.
+        # Keep this position-specific so D Line and Secondary grading is unchanged.
+        if group == "LB":
+            standard_pursuit = (
+                report.pursuit_ratio >= 0.20
+                and report.avg_movement_px_per_frame >= 0.75
+                and report.net_pursuit_px > 0
+            )
+            sustained_pursuit_exception = (
+                report.net_pursuit_px <= 0
+                and report.movement_px >= 150.0
+                and report.avg_movement_px_per_frame >= 1.5
+                and report.pursuit_ratio >= 0.30
+            )
+            if standard_pursuit or sustained_pursuit_exception:
+                report.effort = True
+                report.label = "EFFORT ✓"
+
+        # Secondary players can show valid pursuit of a developing play while
+        # moving laterally across the field. A negative net-pursuit score can
+        # reject that effort when the selected target changes or is imperfect.
+        # Keep the existing Secondary-only exception unchanged.
+        if (
+            group == "Secondary"
+            and report.movement_px >= 150.0
+            and report.avg_movement_px_per_frame >= 1.5
+            and report.pursuit_ratio >= 0.30
+        ):
+            report.effort = True
+            report.label = "EFFORT ✓"
+
+    # Use the finalized, position-aware report grades for video overlays.
+    effort_map = {report.track_id: report.effort for report in reports}
 
     with Visualizer(output_video_path, fps, width, height) as viz:
         for fd in frame_store:
