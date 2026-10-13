@@ -85,18 +85,26 @@ def _select_target_points(frame_store: list[dict]) -> list[tuple[float, float] |
         candidates = [cp for cp in classified if cp.team != "defense"]
         by_track = {cp.detection.track_id: cp for cp in candidates}
 
-        if ball_center is not None and candidates:
-            # Prefer a confidently classified offensive player when similarly
-            # close to the ball; otherwise choose the nearest non-defender.
-            target = min(
-                candidates,
-                key=lambda cp: _distance(
-                    _foot_center(cp.detection.bbox), ball_center
-                ),
-            )
-            target_track_id = target.detection.track_id
-            last_target_point = _foot_center(target.detection.bbox)
+        if ball_center is not None:
+            # When the ball is detected, pursue the ball itself rather than
+            # the nearest offensive player's feet. On interceptions, tipped
+            # passes, and throws toward a defender, the nearest non-defender
+            # can be the wrong target and make genuine defensive pursuit look
+            # like movement away from the play.
+            last_target_point = ball_center
             ball_target_frames += 1
+
+            # Keep a likely player target ready for frames when the ball is
+            # temporarily not detected. This fallback does not replace the
+            # ball point on frames where the ball is visible.
+            if candidates:
+                nearest = min(
+                    candidates,
+                    key=lambda cp: _distance(
+                        _foot_center(cp.detection.bbox), ball_center
+                    ),
+                )
+                target_track_id = nearest.detection.track_id
         elif target_track_id in by_track:
             last_target_point = _foot_center(
                 by_track[target_track_id].detection.bbox
