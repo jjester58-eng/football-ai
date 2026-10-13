@@ -140,6 +140,26 @@
       display: none; color: #f85149; margin-top: 1rem; font-size: .9rem;
     }
 
+
+    #grading-adjuster { max-width: 1100px; width: 100%; margin-top: 1.5rem; }
+    #grading-adjuster h2 { color: #58a6ff; margin-bottom: .4rem; }
+    .adjuster-intro { color: #8b949e; font-size: .88rem; margin-bottom: 1rem; }
+    .adjuster-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 1rem; margin-bottom: 1rem; }
+    .adjuster-controls label { display: flex; flex-direction: column; gap: .35rem; color: #8b949e; font-size: .85rem; }
+    .adjuster-controls select, .target-input { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: .55rem .65rem; }
+    .target-table { width: 100%; min-width: 540px; border-collapse: collapse; font-size: .9rem; }
+    .target-table th, .target-table td { padding: .65rem .7rem; border-bottom: 1px solid #30363d; text-align: left; }
+    .target-table th { color: #8b949e; font-size: .78rem; text-transform: uppercase; }
+    .target-input { width: 84px; }
+    .adjuster-button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: .6rem .85rem; cursor: pointer; }
+    .adjuster-button.primary { background: #1f6feb; border-color: #1f6feb; }
+    .adjuster-button:hover { filter: brightness(1.15); }
+    .adjuster-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1rem; }
+    .target-note { color: #8b949e; font-size: .82rem; margin-top: .8rem; }
+    .target-met { color: #3fb950; font-weight: 700; }
+    .target-short { color: #f85149; font-weight: 700; }
+    .target-neutral { color: #8b949e; font-weight: 700; }
+
     @media (max-width: 760px) {
       .group-summary { grid-template-columns: 1fr 70px 80px 70px 70px; }
       .clip-section > summary { grid-template-columns: 1fr 70px 70px 70px; }
@@ -166,6 +186,33 @@
     <h3>Selected clips</h3>
     <div id="file-list"></div>
   </div>
+
+
+  <section id="grading-adjuster" class="summary-card">
+    <h2>Effort Grading Adjuster</h2>
+    <p class="adjuster-intro">Set the expected effort percentage separately for each defensive group. Recommendations use saved group results in this browser plus a season-phase benchmark. Raw YES/NO grades and video annotations are not changed.</p>
+    <div class="adjuster-controls">
+      <label for="season-phase">Season phase
+        <select id="season-phase">
+          <option value="early">Early season</option>
+          <option value="middle">Middle season</option>
+          <option value="late">Late season</option>
+        </select>
+      </label>
+      <button id="apply-recommendations-btn" class="adjuster-button primary" type="button">Use recommended targets</button>
+    </div>
+    <div class="table-wrap">
+      <table class="target-table">
+        <thead><tr><th>Position group</th><th>Suggested target</th><th>Coach target</th><th>Recommendation basis</th></tr></thead>
+        <tbody id="target-rows"></tbody>
+      </table>
+    </div>
+    <div class="adjuster-actions">
+      <button id="reset-targets-btn" class="adjuster-button" type="button">Reset targets to phase defaults</button>
+      <button id="clear-history-btn" class="adjuster-button" type="button">Clear saved history</button>
+    </div>
+    <p id="adjuster-status" class="target-note" aria-live="polite">Targets are saved in this browser only.</p>
+  </section>
 
   <button id="upload-btn">Analyze Clips ▶</button>
   <p id="error-msg"></p>
@@ -195,8 +242,154 @@
     const summaryCard = document.getElementById('summary-card');
     const groupResults = document.getElementById('group-results');
     const errorMsg = document.getElementById('error-msg');
+    const seasonPhaseSelect = document.getElementById('season-phase');
+    const targetRows = document.getElementById('target-rows');
+    const adjusterStatus = document.getElementById('adjuster-status');
+    const applyRecommendationsBtn = document.getElementById('apply-recommendations-btn');
+    const resetTargetsBtn = document.getElementById('reset-targets-btn');
+    const clearHistoryBtn = document.getElementById('clear-history-btn');
+
+    const POSITION_GROUPS = ['D Line', 'LB', 'Secondary'];
+    const PHASE_DEFAULTS = {
+      early: { 'D Line': 70, 'LB': 70, 'Secondary': 70 },
+      middle: { 'D Line': 83, 'LB': 83, 'Secondary': 83 },
+      late: { 'D Line': 90, 'LB': 90, 'Secondary': 90 }
+    };
+    const PHASE_LABELS = { early: 'Early season', middle: 'Middle season', late: 'Late season' };
+    const TARGETS_STORAGE_KEY = 'footballAiEffortTargetsV1';
+    const HISTORY_STORAGE_KEY = 'footballAiEffortHistoryV1';
 
     let selectedFiles = [];
+    let gradingTargets = loadGradingTargets();
+    let gradingHistory = loadGradingHistory();
+
+    seasonPhaseSelect.value = gradingTargets.phase;
+    renderAdjuster();
+    seasonPhaseSelect.addEventListener('change', () => {
+      gradingTargets.phase = seasonPhaseSelect.value;
+      saveGradingTargets();
+      renderAdjuster();
+    });
+    applyRecommendationsBtn.addEventListener('click', () => {
+      const suggestions = getRecommendations(gradingTargets.phase);
+      POSITION_GROUPS.forEach(group => { gradingTargets.targets[gradingTargets.phase][group] = suggestions[group].target; });
+      saveGradingTargets();
+      renderAdjuster();
+      adjusterStatus.textContent = 'Recommended targets applied for ' + PHASE_LABELS[gradingTargets.phase] + '. You can still edit any target.';
+    });
+    resetTargetsBtn.addEventListener('click', () => {
+      gradingTargets.targets[gradingTargets.phase] = { ...PHASE_DEFAULTS[gradingTargets.phase] };
+      saveGradingTargets();
+      renderAdjuster();
+      adjusterStatus.textContent = 'Targets reset to the default benchmarks for ' + PHASE_LABELS[gradingTargets.phase] + '.';
+    });
+    clearHistoryBtn.addEventListener('click', () => {
+      if (!window.confirm('Clear the saved effort history on this browser? This does not delete videos or reports.')) return;
+      gradingHistory = [];
+      saveGradingHistory();
+      renderAdjuster();
+      adjusterStatus.textContent = 'Saved history cleared. Recommendations now use phase defaults until new analyses are saved.';
+    });
+    targetRows.addEventListener('change', event => {
+      const input = event.target.closest('[data-target-group]');
+      if (!input) return;
+      const group = input.dataset.targetGroup;
+      const value = Math.max(0, Math.min(100, Number(input.value)));
+      gradingTargets.targets[gradingTargets.phase][group] = value;
+      saveGradingTargets();
+      renderAdjuster();
+      adjusterStatus.textContent = 'Coach target saved for ' + group + ' (' + PHASE_LABELS[gradingTargets.phase] + ').';
+    });
+
+    function loadGradingTargets() {
+      const fallback = { phase: 'early', targets: JSON.parse(JSON.stringify(PHASE_DEFAULTS)) };
+      try {
+        const saved = JSON.parse(localStorage.getItem(TARGETS_STORAGE_KEY) || 'null');
+        if (!saved || !saved.targets) return fallback;
+        const merged = { phase: ['early', 'middle', 'late'].includes(saved.phase) ? saved.phase : 'early', targets: {} };
+        Object.keys(PHASE_DEFAULTS).forEach(phase => {
+          merged.targets[phase] = {};
+          POSITION_GROUPS.forEach(group => {
+            const raw = Number(saved.targets[phase] && saved.targets[phase][group]);
+            merged.targets[phase][group] = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : PHASE_DEFAULTS[phase][group];
+          });
+        });
+        return merged;
+      } catch (_) { return fallback; }
+    }
+
+    function saveGradingTargets() {
+      try { localStorage.setItem(TARGETS_STORAGE_KEY, JSON.stringify(gradingTargets)); }
+      catch (_) { adjusterStatus.textContent = 'Browser storage is unavailable; targets may not persist after this page closes.'; }
+    }
+
+    function loadGradingHistory() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '[]');
+        return Array.isArray(saved) ? saved.filter(item => item && item.groups && typeof item.savedAt === 'string').slice(-30) : [];
+      } catch (_) { return []; }
+    }
+
+    function saveGradingHistory() {
+      try { localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(gradingHistory.slice(-30))); }
+      catch (_) { adjusterStatus.textContent = 'Could not save history in this browser. Targets still work for this page.'; }
+    }
+
+    function getRecommendations(phase) {
+      const lift = { early: 0, middle: 5, late: 10 }[phase] || 0;
+      const result = {};
+      POSITION_GROUPS.forEach(group => {
+        const history = gradingHistory
+          .map(item => item.groups[group])
+          .filter(value => Number.isFinite(value))
+          .slice(-5);
+        const baseline = PHASE_DEFAULTS[phase][group];
+        const historicalAverage = history.length
+          ? history.reduce((sum, value) => sum + value, 0) / history.length
+          : null;
+        const target = historicalAverage === null
+          ? baseline
+          : Math.max(baseline, Math.min(100, Math.round(historicalAverage + lift)));
+        result[group] = {
+          target,
+          basis: historicalAverage === null
+            ? 'Phase default; no saved history'
+            : 'Last ' + history.length + ' result' + (history.length === 1 ? '' : 's') + ' avg. ' + Math.round(historicalAverage) + '%'
+        };
+      });
+      return result;
+    }
+
+    function renderAdjuster() {
+      const phase = gradingTargets.phase;
+      const recommendations = getRecommendations(phase);
+      targetRows.innerHTML = POSITION_GROUPS.map(group => {
+        const suggested = recommendations[group];
+        const target = gradingTargets.targets[phase][group];
+        return '<tr><td><strong>' + escapeHtml(group) + '</strong></td>' +
+          '<td>' + suggested.target + '%</td>' +
+          '<td><input class="target-input" type="number" min="0" max="100" step="1" data-target-group="' + escapeHtml(group) + '" aria-label="' + escapeHtml(group) + ' target percentage" value="' + target + '"> %</td>' +
+          '<td class="diagnostic">' + escapeHtml(suggested.basis) + '</td></tr>';
+      }).join('');
+      if (!gradingHistory.length) {
+        adjusterStatus.textContent = 'Targets and history are stored in this browser only. Analyze clips to build recommendations from prior results.';
+      } else {
+        adjusterStatus.textContent = gradingHistory.length + ' saved analysis result(s) available for recommendations on this browser. Recommendations are advisory; coaches control the targets.';
+      }
+    }
+
+    function recordGradingHistory(clipResults) {
+      const groups = {};
+      POSITION_GROUPS.forEach(group => {
+        const players = clipResults.flatMap(clip => clip.player_reports || []).filter(player => player.position_group === group);
+        if (players.length) groups[group] = Math.round(players.filter(player => player.effort).length / players.length * 100);
+      });
+      if (Object.keys(groups).length) {
+        gradingHistory.push({ savedAt: new Date().toISOString(), phase: gradingTargets.phase, groups });
+        gradingHistory = gradingHistory.slice(-30);
+        saveGradingHistory();
+      }
+    }
 
     dropZone.addEventListener('dragover', e => {
       e.preventDefault();
@@ -375,6 +568,8 @@
 
       renderSummary(groupData, clipResults.length);
       renderGroups(groupData);
+      recordGradingHistory(clipResults);
+      renderAdjuster();
     }
 
     function renderSummary(groupData, clipCount) {
@@ -382,13 +577,22 @@
         const graded = data.yes + data.no;
         const pct = graded ? Math.round((data.yes / graded) * 100) : null;
 
+        const target = gradingTargets.targets[gradingTargets.phase][group];
+        const gap = pct === null ? null : pct - target;
+        const gapClass = gap === null ? 'target-neutral' : (gap >= 0 ? 'target-met' : 'target-short');
+        const gapText = gap === null ? '—' : (gap >= 0 ? '+' : '') + gap + ' pts';
         return `
           <div class="group-summary">
             <div class="group-name">${group}</div>
             <div class="group-stat">${data.clips.length} clips</div>
             <div class="group-percent ${pct === null ? 'empty' : ''}">${pct === null ? '—' : pct + '%'}</div>
+            <div class="group-stat">Target ${target}%</div>
+            <div class="group-stat ${gapClass}">${gapText}</div>
+          </div>
+          <div class="group-summary">
             <div class="group-stat group-yes">${data.yes} YES</div>
             <div class="group-stat group-no">${data.no} NO</div>
+            <div class="group-stat" style="grid-column: span 3; text-align:left;">Actual effort rate compared with coach target for ${escapeHtml(gradingTargets.phase)} season phase</div>
           </div>
         `;
       }).join('');
