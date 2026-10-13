@@ -320,7 +320,21 @@ def analyze_video(
         report.position_group = group
         report.position_number = number
 
-    effort_map = scorer.per_frame_effort()
+        # Secondary players can show valid pursuit of a developing play while
+        # moving laterally across the field. A negative net-pursuit score can
+        # reject that effort when the selected target changes or is imperfect.
+        # Use a Secondary-only alternate rule; do not alter D Line or LB grades.
+        if (
+            group == "Secondary"
+            and report.movement_px >= 150.0
+            and report.avg_movement_px_per_frame >= 1.5
+            and report.pursuit_ratio >= 0.30
+        ):
+            report.effort = True
+            report.label = "EFFORT ✓"
+
+    # Use the finalized, position-aware report grades for video overlays.
+    effort_map = {report.track_id: report.effort for report in reports}
 
     with Visualizer(output_video_path, fps, width, height) as viz:
         for fd in frame_store:
