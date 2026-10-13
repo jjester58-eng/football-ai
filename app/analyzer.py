@@ -33,6 +33,102 @@ def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
 logger = logging.getLogger(__name__)
 
 
+
+def _select_target_points(frame_store: list[dict]) -> list[tuple[float, float] | None]:
+    """
+    Select a stable ball-carrier/receiver target for every frame.
+
+    Ball detections take priority. When the ball is missing, retain the last
+    selected non-defensive track; if the clip never provides a ball-based
+    target, use the most mobile non-defensive track as a best-effort fallback.
+    """
+    positions_by_track: dict[int, list[tuple[int, tuple[float, float], str]]] = {}
+    for fd in frame_store:
+        for cp in fd["classified"]:
+            if cp.team == "defense":
+                continue
+            tid = cp.detection.track_id
+            positions_by_track.setdefault(tid, []).append(
+                (fd["frame_idx"], _foot_center(cp.detection.bbox), cp.team)
+            )
+
+    # Rank fallback candidates by movement, with a small preference for
+    # tracks classified as offense. Unknown-team tracks remain eligible because
+    # jersey/helmet classification can be unreliable in game footage.
+    fallback_rank: list[tuple[float, int, int]] = []
+    for tid, observations in positions_by_track.items():
+        observations.sort(key=lambda item: item[0])
+        if len(observations) < 3:
+            continue
+        movement = sum(
+            _distance(observations[i - 1][1], observations[i][1])
+            for i in range(1, len(observations))
+            if observations[i][0] == observations[i - 1][0] + 1
+        )
+        offense_frames = sum(team == "offense" for _, _, team in observations)
+        fallback_rank.append((movement + offense_frames * 2.0, len(observations), tid))
+
+    fallback_track_id = (
+        max(fallback_rank)[2] if fallback_rank else None
+    )
+
+    target_track_id: int | None = None
+    last_target_point: tuple[float, float] | None = None
+    selected_points: list[tuple[float, float] | None] = []
+    ball_target_frames = 0
+    fallback_target_frames = 0
+    retained_target_frames = 0
+
+    for fd in frame_store:
+        classified = fd["classified"]
+        ball_center = fd["ball_center"]
+        candidates = [cp for cp in classified if cp.team != "defense"]
+        by_track = {cp.detection.track_id: cp for cp in candidates}
+
+        if ball_center is not None and candidates:
+            # Prefer a confidently classified offensive player when similarly
+            # close to the ball; otherwise choose the nearest non-defender.
+            target = min(
+                candidates,
+                key=lambda cp: _distance(
+                    _foot_center(cp.detection.bbox), ball_center
+                ),
+            )
+            target_track_id = target.detection.track_id
+            last_target_point = _foot_center(target.detection.bbox)
+            ball_target_frames += 1
+        elif target_track_id in by_track:
+            last_target_point = _foot_center(
+                by_track[target_track_id].detection.bbox
+            )
+            retained_target_frames += 1
+        elif fallback_track_id in by_track:
+            target_track_id = fallback_track_id
+            last_target_point = _foot_center(
+                by_track[fallback_track_id].detection.bbox
+            )
+            fallback_target_frames += 1
+        # If the selected target is temporarily occluded, retain its last
+        # known point rather than dropping all pursuit observations for a frame.
+
+        if last_target_point is None and ball_center is not None:
+            last_target_point = ball_center
+        selected_points.append(last_target_point)
+
+    logger.info(
+        "Target selection diagnostics | ball_associated_frames=%d | "
+        "retained_target_frames=%d | fallback_target_frames=%d | "
+        "fallback_track_id=%s | usable_target_frames=%d/%d",
+        ball_target_frames,
+        retained_target_frames,
+        fallback_target_frames,
+        fallback_track_id,
+        sum(point is not None for point in selected_points),
+        len(frame_store),
+    )
+    return selected_points
+
+
 def _assign_defensive_groups(
     frame_store: list[dict],
     reports,
@@ -145,7 +241,6 @@ def analyze_video(
     classifier = TeamClassifier()
     field_det = FieldDetector()
     scorer = EffortScorer()
-    target_track_id = None
 
     cap = cv2.VideoCapture(str(input_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -176,48 +271,18 @@ def analyze_video(
         classified = classifier.classify(frame, on_field_persons)
         ball_center = frame_result.ball_center()
 
-        target_point = ball_center
-        if ball_center is not None:
-            candidates = [
-                cp for cp in classified
-                if cp.team != "defense"
-            ]
-            if candidates:
-                target = min(
-                    candidates,
-                    key=lambda cp: _distance(
-                        _foot_center(cp.detection.bbox), ball_center
-                    ),
-                )
-                target_track_id = target.detection.track_id
-                target_point = _foot_center(target.detection.bbox)
-        elif target_track_id is not None:
-            target = next(
-                (
-                    cp for cp in classified
-                    if cp.detection.track_id == target_track_id
-                    and cp.team != "defense"
-                ),
-                None,
-            )
-            if target is not None:
-                target_point = _foot_center(target.detection.bbox)
-
         total_person_detections += len(frame_result.persons)
         total_on_field_persons += len(on_field_persons)
         total_defense_classifications += sum(cp.team == "defense" for cp in classified)
         total_offense_classifications += sum(cp.team == "offense" for cp in classified)
         total_unknown_classifications += sum(cp.team == "unknown" for cp in classified)
 
-        for cp in classified:
-            if cp.team == "defense":
-                scorer.update(frame_result.frame_idx, cp, target_point)
-
         frame_store.append({
             "frame_idx": frame_result.frame_idx,
             "frame": frame,
             "classified": classified,
             "balls": frame_result.balls,
+            "ball_center": ball_center,
         })
 
     logger.info(
@@ -229,6 +294,15 @@ def analyze_video(
         total_offense_classifications,
         total_unknown_classifications,
     )
+
+    # Select targets after the full clip is available so the fallback can
+    # use track movement across the entire play, even when the ball is never
+    # detected by YOLO.
+    target_points = _select_target_points(frame_store)
+    for fd, target_point in zip(frame_store, target_points):
+        for cp in fd["classified"]:
+            if cp.team == "defense":
+                scorer.update(fd["frame_idx"], cp, target_point)
 
     reports = scorer.compute_reports()
 
