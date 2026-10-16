@@ -137,6 +137,89 @@ def _select_target_points(frame_store: list[dict]) -> list[tuple[float, float] |
     return selected_points
 
 
+def _detect_change_of_speed_flags(
+    frame_store: list[dict],
+    target_points: list[tuple[float, float] | None],
+    fps: float,
+    scored_track_ids: set[int],
+) -> dict[int, list[dict]]:
+    """Flag possible Rule 2 slowdowns for coach review; never deduct points."""
+    observations: dict[int, list[tuple[int, tuple[float, float], tuple[float, float] | None]]] = {}
+    for fd, target in zip(frame_store, target_points):
+        for cp in fd["classified"]:
+            tid = cp.detection.track_id
+            if cp.team != "defense" or tid not in scored_track_ids:
+                continue
+            observations.setdefault(tid, []).append(
+                (fd["frame_idx"], _foot_center(cp.detection.bbox), target)
+            )
+
+    flags: dict[int, list[dict]] = {}
+    for tid, track_obs in observations.items():
+        track_obs.sort(key=lambda item: item[0])
+        steps: list[dict] = []
+        for prev, curr in zip(track_obs, track_obs[1:]):
+            prev_idx, prev_foot, prev_target = prev
+            curr_idx, curr_foot, _ = curr
+            if curr_idx != prev_idx + 1 or prev_target is None:
+                steps.append({"frame": curr_idx, "speed": None, "pursuing": False,
+                              "distance": None, "direction": None})
+                continue
+            dx, dy = curr_foot[0] - prev_foot[0], curr_foot[1] - prev_foot[1]
+            speed = float((dx * dx + dy * dy) ** 0.5)
+            tx, ty = prev_target[0] - prev_foot[0], prev_target[1] - prev_foot[1]
+            target_len = float((tx * tx + ty * ty) ** 0.5)
+            dot = dx * tx + dy * ty
+            pursuing = target_len > 1e-6 and dot / target_len > 0.5
+            direction = (dx / speed, dy / speed) if speed > 1.0 else None
+            steps.append({"frame": curr_idx, "speed": speed, "pursuing": pursuing,
+                          "distance": target_len, "direction": direction})
+
+        for i, current in enumerate(steps):
+            if current["speed"] is None or current["distance"] is None or current["distance"] < 20:
+                continue
+            prior = [
+                step["speed"] for step in steps[max(0, i - 10):i]
+                if step["speed"] is not None and step["pursuing"] and step["speed"] >= 3.0
+            ]
+            if len(prior) < 4:
+                continue
+            baseline = float(np.median(prior))
+            slowdown_threshold = max(1.0, baseline * 0.45)
+            if current["speed"] > slowdown_threshold:
+                continue
+            run = [current]
+            for later in steps[i + 1:i + 3]:
+                if (later["speed"] is None or later["distance"] is None
+                        or later["distance"] < 20 or later["speed"] > slowdown_threshold):
+                    break
+                if later["direction"] is not None and current["direction"] is not None:
+                    alignment = (later["direction"][0] * current["direction"][0]
+                                 + later["direction"][1] * current["direction"][1])
+                    if alignment < -0.25:
+                        break
+                run.append(later)
+            if len(run) < 3:
+                continue
+            start_frame = run[0]["frame"]
+            flags[tid] = [{
+                "rule": 2,
+                "title": "Possible change of speed during pursuit",
+                "frame": start_frame,
+                "time_seconds": round(start_frame / max(fps, 1.0), 1),
+                "evidence": (
+                    f"Tracked speed stayed at or below {slowdown_threshold:.1f} px/frame "
+                    f"for {len(run)} consecutive frames after prior pursuit averaging "
+                    f"{baseline:.1f} px/frame. Review the film for context."
+                ),
+                "status": "Needs coach review",
+            }]
+            break
+    logger.info("Potential D-Loaf diagnostics | rule_2_flags=%d | scored_players=%d",
+                len(flags), len(scored_track_ids))
+    return flags
+
+
 def _assign_defensive_groups(
     frame_store: list[dict],
     reports,
@@ -314,6 +397,10 @@ def analyze_video(
 
     reports = scorer.compute_reports()
 
+    potential_loaf_flags = _detect_change_of_speed_flags(
+        frame_store, target_points, fps, {report.track_id for report in reports}
+    )
+
     position_groups = _assign_defensive_groups(frame_store, reports)
     for report in reports:
         group, number = position_groups.get(report.track_id, ("Secondary", 0))
@@ -395,6 +482,7 @@ def analyze_video(
                 "pursuit_ratio": r.pursuit_ratio,
                 "net_pursuit_px": r.net_pursuit_px,
                 "frame_count": r.frame_count,
+                "potential_loaf_flags": potential_loaf_flags.get(r.track_id, []),
             }
             for r in reports
         ],
