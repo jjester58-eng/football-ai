@@ -13,6 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from app.detector import PlayerDetector
 from app.effort_scorer import EffortScorer
