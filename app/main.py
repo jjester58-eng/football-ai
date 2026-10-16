@@ -9,7 +9,7 @@ Endpoints:
   GET  /video/{job_id}   — stream the annotated video
   GET  /health           — liveness check
 """
-import numpy as np
+
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +17,8 @@ import logging
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+
+import numpy as np
 
 import aiofiles
 from fastapi import FastAPI, File, HTTPException, UploadFile
