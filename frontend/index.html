@@ -130,6 +130,9 @@
     .diagnostic { color: #8b949e; font-size: .85rem; }
     .effort-yes { color: #3fb950; font-weight: 700; }
     .effort-no { color: #f85149; font-weight: 700; }
+    .loaf-flag { margin-top: .35rem; padding: .55rem .7rem; border-left: 3px solid #d29922; background: #1c1a12; border-radius: 4px; color: #e6edf3; font-size: .82rem; }
+    .loaf-flag strong { color: #e3b341; }
+    .loaf-note { color: #8b949e; font-size: .8rem; margin: .4rem 0 .8rem; }
 
     .empty-group {
       color: #8b949e; padding: 1rem; font-size: .9rem;
@@ -628,9 +631,14 @@
             const effortClass = p.effort ? 'effort-yes' : 'effort-no';
             const effortText = p.effort ? '✓ YES' : '✗ NO';
 
+            const flags = Array.isArray(p.potential_loaf_flags) ? p.potential_loaf_flags : [];
+            const flagText = flags.length
+              ? flags.map(flag => '<div class="loaf-flag"><strong>Rule ' + escapeHtml(flag.rule) + ': ' + escapeHtml(flag.title) + '</strong><br>Approx. ' + num(flag.time_seconds, 1) + 's into clip — ' + escapeHtml(flag.evidence) + '<br><span class="diagnostic">' + escapeHtml(flag.status || 'Needs coach review') + '</span></div>').join('')
+              : '<span class="diagnostic">None flagged</span>';
+
             return `
               <tr>
-                <td><strong>${escapeHtml(p.display_name || p.position_group || group)}</strong></td>
+                <td><strong>${escapeHtml(p.display_name || p.position_group || group)}</strong><div>${flagText}</div></td>
                 <td class="${effortClass}">${effortText}</td>
                 <td>${num(p.dist_start)} px</td>
                 <td>${num(p.dist_end)} px</td>
@@ -652,11 +660,12 @@
               </summary>
               <div class="clip-body">
                 <video class="clip-video" controls preload="metadata" src="${clip.videoUrl}"></video>
+                <p class="loaf-note">Potential D-Loaf flags are experimental review prompts, not confirmed loafs or automatic deductions. Only Rule 2 is currently checked; Rules 1 and 5–8 are excluded, while Rules 3–4 are not implemented.</p>
                 <div class="table-wrap">
                   <table>
                     <thead>
                       <tr>
-                        <th>Defensive Position</th>
+                        <th>Defensive Position / Potential D-Loaf Flags</th>
                         <th>Effort</th>
                         <th>Dist. Start</th>
                         <th>Dist. End</th>
