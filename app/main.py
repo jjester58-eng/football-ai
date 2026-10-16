@@ -9,7 +9,7 @@ Endpoints:
   GET  /video/{job_id}   — stream the annotated video
   GET  /health           — liveness check
 """
-
+import numpy as np
 from __future__ import annotations
 
 import asyncio
